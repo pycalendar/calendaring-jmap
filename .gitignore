@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Editor temp files
+*.swp
+*.swo
+*~
+
+# Generated version file
+src/calendaring_jmap/_version.py
+
+# uv lock file
+uv.lock
+
+# Docs build
+docs/_build/
