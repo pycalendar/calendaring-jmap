@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+version = 1
+
+# Auto-generated version file (cannot have persistent headers)
+[[annotations]]
+path = "src/calendaring_jmap/_version.py"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Bare version string, no comment syntax available
+[[annotations]]
+path = ".python-version"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
