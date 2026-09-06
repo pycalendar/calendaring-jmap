@@ -34,18 +34,17 @@ dependencies = [
 
 [project.optional-dependencies]
 async = ["niquests[asyncio]"]
-
-[project.urls]
-Repository = "https://github.com/pycalendar/calendaring-jmap"
-Issues = "https://github.com/pycalendar/calendaring-jmap/issues"
-
-[dependency-groups]
 dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "ruff==0.16.6",
   "coverage==7.16.0",
+  "pytest-cov==7.1.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/pycalendar/calendaring-jmap"
+Issues = "https://github.com/pycalendar/calendaring-jmap/issues"
 
 [tool.hatch.version]
 source = "vcs"
