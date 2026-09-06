@@ -42,6 +42,9 @@ jobs:
   test:
     name: Test on Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for tokenless Codecov upload via OIDC
     strategy:
       fail-fast: false
       matrix:
@@ -72,6 +75,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
+          use_oidc: true
           files: ./coverage.xml
           flags: python-${{ matrix.python-version }}
           fail_ci_if_error: true
@@ -80,5 +84,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
         with:
+          use_oidc: true
           files: ./junit.xml
           flags: python-${{ matrix.python-version }}
