@@ -7,6 +7,7 @@ name = "calendaring-jmap"
 description = "JMAP (RFC 8620) calendar client library"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{ name = "Sashank Bhamidi" }]
 dynamic = ["version"]
 classifiers = [
