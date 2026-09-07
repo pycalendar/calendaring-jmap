@@ -20,8 +20,9 @@ jobs:
   test:
     name: Run full test suite
     uses: $/.github/workflows/tests.yml
-    secrets:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    permissions:
+      contents: read
+      id-token: write # required for tokenless Codecov upload via OIDC
 
   build:
     name: Build distribution

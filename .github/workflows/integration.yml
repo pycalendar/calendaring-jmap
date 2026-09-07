@@ -55,4 +55,12 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run integration tests
-        run: pytest tests/test_jmap_integration.py
+        run: |
+          set +e
+          pytest tests/test_jmap_integration.py
+          ec=$?
+          # Exit 5 = no tests collected. Expected until #9 lands the real
+          # extracted test suite; anything else is a genuine failure.
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 5 ]; then
+            exit "$ec"
+          fi
