@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Cyrus IMAP integration tests
+    runs-on: ubuntu-latest
+    services:
+      cyrus:
+        # Pinned to a known-good build, same digest python-caldav uses.
+        # See https://github.com/python-caldav/caldav for updates if this
+        # needs to move.
+        image: ghcr.io/cyrusimap/cyrus-docker-test-server@sha256:d639a9116691a7a1c875073486c419d60843e5ef8e32e65c5ef56283874dbf2c
+        ports:
+          - 8802:8080
+          - 8001:8001
+        env:
+          DEFAULTDOMAIN: example.com
+          SERVERNAME: cyrus-test
+        options: >-
+          --health-cmd "curl -s http://localhost:8080/ || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 60s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run integration tests
+        run: |
+          set +e
+          pytest tests/test_jmap_integration.py
+          ec=$?
+          # Exit 5 = no tests collected. Expected until #9 lands the real
+          # extracted test suite; anything else is a genuine failure.
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 5 ]; then
+            exit "$ec"
+          fi
