@@ -27,6 +27,26 @@ docker-compose -f tests/docker/cyrus/docker-compose.yml up -d
 pytest tests/test_jmap_integration.py
 ```
 
+## Change log
+
+If your PR changes behavior, add a news fragment. CI-only and internal-refactor PRs don't need one.
+
+```bash
+touch news/<issue-number>.<type>.rst
+```
+
+Where `<type>` is one of: `breaking`, `removal`, `feature`, `bugfix`, `documentation`, `deps`, `internal`, `chore`, `security`.
+
+Write a short, user-facing description of the change inside the file. Fragments are collected into [CHANGES.rst](CHANGES.rst) at release time — don't edit that file directly.
+
+To preview what the change log will look like:
+
+```bash
+towncrier build --draft --version 0.0.0
+```
+
+If your PR genuinely doesn't need a fragment (CI, docs-only, internal refactor), ask a maintainer to add the `skip-changelog` label instead of skipping this silently.
+
 ## License
 
 By contributing, you agree your contributions are licensed under AGPL-3.0-or-later, same as the rest of the project. See [LICENSE](LICENSE).
