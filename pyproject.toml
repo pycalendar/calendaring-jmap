@@ -41,6 +41,7 @@ dev = [
   "ruff==0.16.6",
   "coverage==7.16.0",
   "pytest-cov==7.1.0",
+  "towncrier==26.9.0",
 ]
 
 [project.urls]
@@ -69,3 +70,56 @@ known-first-party = ["calendaring_jmap"]
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
+
+[tool.towncrier]
+directory = "news/"
+filename = "CHANGES.rst"
+issue_format = "`Issue #{issue} <https://github.com/pycalendar/calendaring-jmap/issues/{issue}>`_"
+start_string = ".. towncrier release notes start\n"
+title_format = "{version} ({project_date})"
+underlines = ["-", "~", "`"]
+
+[[tool.towncrier.type]]
+directory = "breaking"
+name = "Breaking changes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removal"
+name = "Removals and deprecations"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "feature"
+name = "New features"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "bugfix"
+name = "Bug fixes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "documentation"
+name = "Documentation"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deps"
+name = "Dependency changes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "internal"
+name = "Internal changes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "chore"
+name = "Other tasks"
+showcontent = false
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security fixes"
+showcontent = true
