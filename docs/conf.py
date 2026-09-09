@@ -63,6 +63,10 @@ intersphinx_mapping = {
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 napoleon_include_init_with_doc = True
+# Render "Attributes:" as :ivar: field-list entries instead of standalone
+# attribute directives, which collide with autodoc's own dataclass field
+# introspection and produce "duplicate object description" warnings.
+napoleon_use_ivar = True
 
 # Autodoc settings
 autodoc_default_options = {

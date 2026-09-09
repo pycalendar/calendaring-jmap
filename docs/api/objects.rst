@@ -4,9 +4,6 @@
 :mod:`objects` -- JMAP data objects
 ====================================
 
-.. These modules are still empty stubs pending #9. autodoc will warn
-   until real code lands here — expected, not a doc bug.
-
 .. automodule:: calendaring_jmap.objects.calendar
    :members:
 
