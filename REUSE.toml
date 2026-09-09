@@ -16,3 +16,11 @@ path = ".python-version"
 precedence = "override"
 SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Towncrier news fragments. short-lived, deleted once folded into
+# CHANGES.rst at release time. Not worth a header each.
+[[annotations]]
+path = "news/*"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
