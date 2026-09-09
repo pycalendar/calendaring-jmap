@@ -17,14 +17,14 @@ pre-commit install
 Unit tests (no server required):
 
 ```bash
-pytest tests/test_jmap_unit.py
+pytest src/calendaring_jmap/tests/test_jmap_unit.py
 ```
 
 Integration tests, against Cyrus IMAP via Docker:
 
 ```bash
 docker-compose -f tests/docker/cyrus/docker-compose.yml up -d
-pytest tests/test_jmap_integration.py
+pytest src/calendaring_jmap/tests/test_jmap_integration.py
 ```
 
 ## Change log
@@ -37,7 +37,7 @@ touch news/<issue-number>.<type>.rst
 
 Where `<type>` is one of: `breaking`, `removal`, `feature`, `bugfix`, `documentation`, `deps`, `internal`, `chore`, `security`.
 
-Write a short, user-facing description of the change inside the file. Fragments are collected into [CHANGES.rst](CHANGES.rst) at release time — don't edit that file directly.
+Write a short, user-facing description of the change inside the file. Fragments are collected into [CHANGES.rst](CHANGES.rst) at release time. Don't edit that file directly.
 
 To preview what the change log will look like:
 

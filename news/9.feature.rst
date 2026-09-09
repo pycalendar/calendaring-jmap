@@ -1,0 +1,1 @@
+Extracted the JMAP client from python-caldav into this standalone package. calendaring-jmap no longer depends on ``caldav``: configuration now comes from ``JMAP_URL``/``JMAP_USERNAME``/``JMAP_PASSWORD`` environment variables or a YAML config file instead of caldav's config system.

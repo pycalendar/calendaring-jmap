@@ -31,6 +31,7 @@ dependencies = [
   "niquests>=3.21.1",
   "requests>=2.34.2",
   "icalendar>=7.3.0",
+  "PyYAML>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -69,12 +70,22 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# AsyncSession is resolved before the rest of the module's imports so a
+# missing niquests install fails fast with a clear error, not an opaque
+# one from deep in the import chain.
+"src/calendaring_jmap/async_client.py" = ["E402"]
+# Imports are grouped by test class throughout this file, close to the
+# tests that use them, rather than all hoisted to the top. The file is
+# large enough that locality helps more than strict import ordering.
+"src/calendaring_jmap/tests/test_jmap_unit.py" = ["E402"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["calendaring_jmap"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
-testpaths = ["tests"]
+testpaths = ["src/calendaring_jmap/tests"]
 
 [tool.towncrier]
 directory = "news/"
