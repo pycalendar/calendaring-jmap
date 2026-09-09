@@ -43,6 +43,11 @@ dev = [
   "pytest-cov==7.1.0",
   "towncrier==26.9.0",
 ]
+docs = [
+  "sphinx==9.1.0",
+  "pydata-sphinx-theme==0.21.0",
+  "sphinx-copybutton==0.5.2",
+]
 
 [project.urls]
 Repository = "https://github.com/pycalendar/calendaring-jmap"
