@@ -8,6 +8,8 @@ Rule: zero network calls, zero Docker dependency, all tests are fast.
 External HTTP is mocked via unittest.mock wherever needed.
 """
 
+import warnings
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +17,7 @@ import pytest
 try:
     from niquests.auth import HTTPBasicAuth
 except ImportError:
-    from requests.auth import HTTPBasicAuth  # type: ignore[no-redef]
+    from requests.auth import HTTPBasicAuth  # type: ignore[assignment,no-redef]
 
 _JMAP_URL = "http://localhost:8802/.well-known/jmap"
 _API_URL = "http://localhost:8802/jmap/api"
@@ -31,6 +33,126 @@ from calendaring_jmap.error import (
 )
 
 
+class TestHTTPLibrarySelection:
+    def test_require_async_session_raises_when_niquests_absent(self, monkeypatch):
+        import calendaring_jmap._http as _http_mod
+
+        monkeypatch.setattr(_http_mod, "AsyncSession", None)
+        monkeypatch.setattr(_http_mod, "USE_NIQUESTS", False)
+        with pytest.raises(ImportError, match="not installed"):
+            _http_mod.require_async_session()
+
+    def test_require_async_session_raises_with_old_niquests_message(self, monkeypatch):
+        import calendaring_jmap._http as _http_mod
+
+        monkeypatch.setattr(_http_mod, "AsyncSession", None)
+        monkeypatch.setattr(_http_mod, "USE_NIQUESTS", True)
+        with pytest.raises(ImportError, match="old niquests install"):
+            _http_mod.require_async_session()
+
+    def test_require_async_session_returns_session_when_present(self, monkeypatch):
+        import calendaring_jmap._http as _http_mod
+
+        sentinel = object()
+        monkeypatch.setattr(_http_mod, "AsyncSession", sentinel)
+        assert _http_mod.require_async_session() is sentinel
+
+    @staticmethod
+    @contextmanager
+    def _reloaded_http_module():
+        """Reload calendaring_jmap._http under whatever sys.modules/import
+        patches the caller has already set up, then restore its original
+        __dict__ afterwards. client.py and friends imported names out of
+        this module at collection time; restoring the same module object's
+        contents (rather than leaving the reloaded replacement in sys.modules)
+        keeps those already-bound references consistent with isinstance
+        checks elsewhere in the suite."""
+        import importlib
+
+        import calendaring_jmap._http as _http_mod
+
+        original_dict = dict(_http_mod.__dict__)
+        try:
+            importlib.reload(_http_mod)
+            yield _http_mod
+        finally:
+            _http_mod.__dict__.clear()
+            _http_mod.__dict__.update(original_dict)
+
+    def test_module_reload_falls_back_to_requests_when_niquests_missing(self, monkeypatch):
+        import sys
+
+        for mod_name in list(sys.modules):
+            if mod_name == "niquests" or mod_name.startswith("niquests."):
+                monkeypatch.delitem(sys.modules, mod_name, raising=False)
+        monkeypatch.setitem(sys.modules, "niquests", None)
+
+        with self._reloaded_http_module() as reloaded:
+            assert reloaded.USE_NIQUESTS is False
+            assert reloaded.USE_REQUESTS is True
+            assert reloaded.AsyncSession is None
+
+    def test_module_reload_raises_when_neither_library_installed(self, monkeypatch):
+        import sys
+
+        for mod_name in list(sys.modules):
+            if mod_name.split(".")[0] in ("niquests", "requests"):
+                monkeypatch.delitem(sys.modules, mod_name, raising=False)
+        monkeypatch.setitem(sys.modules, "niquests", None)
+        monkeypatch.setitem(sys.modules, "requests", None)
+
+        with pytest.raises(ImportError, match="needs an HTTP library"):
+            with self._reloaded_http_module():
+                pass
+
+    def test_module_reload_old_niquests_without_async_session(self, monkeypatch):
+        import sys
+        import types
+
+        fake_niquests = types.ModuleType("niquests")
+        fake_niquests.Session = MagicMock()
+
+        fake_auth = types.ModuleType("niquests.auth")
+        fake_auth.AuthBase = object
+        fake_auth.HTTPBasicAuth = object
+        fake_niquests.auth = fake_auth
+
+        for mod_name in list(sys.modules):
+            if mod_name == "niquests" or mod_name.startswith("niquests."):
+                monkeypatch.delitem(sys.modules, mod_name, raising=False)
+        monkeypatch.setitem(sys.modules, "niquests", fake_niquests)
+        monkeypatch.setitem(sys.modules, "niquests.auth", fake_auth)
+
+        with self._reloaded_http_module() as reloaded:
+            assert reloaded.USE_NIQUESTS is True
+            assert reloaded.AsyncSession is None
+            with pytest.raises(ImportError, match="old niquests install"):
+                reloaded.require_async_session()
+
+    def test_http_bearer_auth_not_equal_to_different_password(self):
+        from calendaring_jmap._http import HTTPBearerAuth
+
+        a = HTTPBearerAuth("token1")
+        b = HTTPBearerAuth("token2")
+        assert a != b
+
+    def test_http_bearer_auth_not_equal_to_non_bearer_object(self):
+        from calendaring_jmap._http import HTTPBearerAuth
+
+        a = HTTPBearerAuth("token1")
+        assert a != object()
+
+    def test_http_bearer_auth_call_sets_authorization_header(self):
+        from calendaring_jmap._http import HTTPBearerAuth
+
+        auth = HTTPBearerAuth("secret-token")
+        request = MagicMock()
+        request.headers = {}
+        result = auth(request)
+        assert result.headers["Authorization"] == "Bearer secret-token"
+        assert result is request
+
+
 class TestJMAPErrorHierarchy:
     def test_jmap_error_is_base_error(self):
         assert issubclass(JMAPError, JMAPBaseError)
@@ -43,6 +165,12 @@ class TestJMAPErrorHierarchy:
 
     def test_jmap_method_error_is_jmap_error(self):
         assert issubclass(JMAPMethodError, JMAPError)
+
+    def test_jmap_base_error_str_contains_url_and_reason(self):
+        e = JMAPBaseError(url="http://example.com", reason="something broke")
+        s = str(e)
+        assert "http://example.com" in s
+        assert "something broke" in s
 
     def test_jmap_error_default_error_type(self):
         e = JMAPError()
@@ -205,6 +333,81 @@ class TestFetchSession:
             mock_get.return_value = _make_mock_response(data)
             session = fetch_session(_JMAP_URL, auth=None)
         assert session.account_id == "user_calendar"
+
+    def test_uses_primary_accounts_entry_for_calendar_capability(self):
+        data = dict(_SESSION_JSON)
+        data["accounts"] = {
+            "user_secondary": {
+                "name": "secondary@example.com",
+                "isPersonalAccount": False,
+                "accountCapabilities": {CALENDAR_CAPABILITY: {}},
+            },
+            "user_primary": {
+                "name": "primary@example.com",
+                "isPersonalAccount": True,
+                "accountCapabilities": {CALENDAR_CAPABILITY: {}},
+            },
+        }
+        data["primaryAccounts"] = {CALENDAR_CAPABILITY: "user_primary"}
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(data)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.account_id == "user_primary"
+
+    def test_primary_accounts_entry_without_calendar_capability_falls_back(self):
+        data = dict(_SESSION_JSON)
+        data["accounts"] = {
+            "user_no_calendar": {
+                "name": "nocal@example.com",
+                "isPersonalAccount": True,
+                "accountCapabilities": {"urn:ietf:params:jmap:mail": {}},
+            },
+            "user_fallback": {
+                "name": "fallback@example.com",
+                "isPersonalAccount": True,
+                "accountCapabilities": {CALENDAR_CAPABILITY: {}},
+            },
+        }
+        data["primaryAccounts"] = {CALENDAR_CAPABILITY: "user_no_calendar"}
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(data)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.account_id == "user_fallback"
+
+    def test_rewrites_api_url_scheme_and_port_to_match_session_host(self):
+        data = dict(_SESSION_JSON)
+        data["apiUrl"] = "https://localhost:9999/jmap/api"
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(data)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.api_url == "http://localhost:8802/jmap/api"
+
+    @pytest.mark.asyncio
+    async def test_async_fetch_session_parses_api_url(self, monkeypatch):
+        from calendaring_jmap.session import async_fetch_session
+
+        mock_resp = _make_mock_response(_SESSION_JSON)
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        monkeypatch.setattr("calendaring_jmap.session.AsyncSession", lambda: mock_http)
+        session = await async_fetch_session(_JMAP_URL, auth=None)
+        assert session.api_url == _API_URL
+        assert session.account_id == _USERNAME
+
+    @pytest.mark.asyncio
+    async def test_async_fetch_session_raises_auth_error_on_401(self, monkeypatch):
+        from calendaring_jmap.session import async_fetch_session
+
+        mock_resp = _make_mock_response({}, status_code=401)
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        monkeypatch.setattr("calendaring_jmap.session.AsyncSession", lambda: mock_http)
+        with pytest.raises(JMAPAuthError):
+            await async_fetch_session(_JMAP_URL, auth=None)
 
 
 from datetime import datetime, timezone
@@ -442,6 +645,76 @@ class TestJMAPCalendar:
         event_payload = create_args["create"]["new-0"]
         assert event_payload.get("calendarIds") == {"my-calendar": True}
 
+    def test_calendar_search_naive_datetime_treated_as_utc(self, monkeypatch):
+        resp = self._query_get_response([self._RAW_EVENT])
+        cal, captured = self._capturing_calendar(monkeypatch, resp)
+        naive_start = datetime(2026, 6, 1, 12, 0, 0)
+        cal.search(start=naive_start)
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"]["after"] == "2026-06-01T12:00:00Z"
+
+    def test_calendar_search_dispatches_to_async_when_async_backed(self):
+        mock_client = MagicMock()
+        mock_client._search = AsyncMock(return_value=["result"])
+        cal = JMAPCalendar(id="cal1", name="Test")
+        cal._client = mock_client
+        cal._is_async = True
+        coro = cal.search(
+            text="standup",
+            start=datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        import asyncio
+
+        result = asyncio.run(coro)
+        assert result == ["result"]
+        mock_client._search.assert_awaited_once()
+        call_kwargs = mock_client._search.call_args.kwargs
+        assert call_kwargs["text"] == "standup"
+        assert call_kwargs["start"] == "2026-06-01T12:00:00Z"
+        assert call_kwargs["end"] == "2026-06-02T12:00:00Z"
+
+    def test_calendar_search_async_passes_through_string_dates_unconverted(self):
+        mock_client = MagicMock()
+        mock_client._search = AsyncMock(return_value=[])
+        cal = JMAPCalendar(id="cal1", name="Test")
+        cal._client = mock_client
+        cal._is_async = True
+        import asyncio
+
+        asyncio.run(cal.search(start="2026-06-01T12:00:00", end="2026-06-02T12:00:00"))
+        call_kwargs = mock_client._search.call_args.kwargs
+        assert call_kwargs["start"] == "2026-06-01T12:00:00"
+        assert call_kwargs["end"] == "2026-06-02T12:00:00"
+
+    def test_calendar_get_object_by_uid_dispatches_to_async_when_async_backed(self):
+        mock_client = MagicMock()
+        mock_client._get_object_by_uid = AsyncMock(return_value="obj")
+        cal = JMAPCalendar(id="cal1", name="Test")
+        cal._client = mock_client
+        cal._is_async = True
+        import asyncio
+
+        result = asyncio.run(cal.get_object_by_uid("some-uid"))
+        assert result == "obj"
+        mock_client._get_object_by_uid.assert_awaited_once_with(
+            "some-uid", calendar_id="cal1", parent=cal
+        )
+
+    def test_calendar_add_event_dispatches_to_async_when_async_backed(self):
+        mock_client = MagicMock()
+        mock_client.create_event = AsyncMock(return_value="ev-new-id")
+        cal = JMAPCalendar(id="cal1", name="Test")
+        cal._client = mock_client
+        cal._is_async = True
+        import asyncio
+
+        result = asyncio.run(cal.add_event("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
+        assert result == "ev-new-id"
+        mock_client.create_event.assert_awaited_once_with(
+            "cal1", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
+        )
+
 
 _MINIMAL_JSCAL_DICT = {
     "id": "ev-obj-1",
@@ -483,8 +756,7 @@ class TestJMAPCalendarObject:
 
     def test_save_calls_update_event(self):
         mock_client = MagicMock()
-        mock_parent = MagicMock()
-        mock_parent._is_async = False
+        mock_parent = JMAPCalendar(id="cal1", name="Test")
         mock_parent._client = mock_client
 
         obj = JMAPCalendarObject(data=_MINIMAL_JSCAL_DICT, parent=mock_parent)
@@ -712,6 +984,210 @@ class TestJMAPClient:
             client._request([("Calendar/get", {"accountId": _USERNAME}, "c0")])
         assert exc_info.value.error_type == "unknownMethod"
 
+    def test_prebuilt_auth_object_takes_precedence(self):
+        from calendaring_jmap._http import HTTPBearerAuth
+
+        prebuilt = HTTPBearerAuth("prebuilt-token")
+        client = JMAPClient(url="http://x", username="u", password="p", auth=prebuilt)
+        assert client._auth is prebuilt
+
+
+from calendaring_jmap.client import _JMAPClientBase
+
+
+class TestJMAPClientBaseParsers:
+    """Direct unit tests for the response-fallthrough branches of each
+    _parse_* helper: what happens when the expected method name never
+    appears in the responses list (e.g. a batched call whose relevant
+    method was dropped or reordered by the server)."""
+
+    def test_parse_get_calendars_returns_empty_list_without_match(self):
+        assert _JMAPClientBase._parse_get_calendars([], client=None, is_async=False) == []
+
+    def test_parse_create_event_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
+            _JMAPClientBase._parse_create_event_response([], api_url=_API_URL)
+
+    def test_parse_get_event_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/get response"):
+            _JMAPClientBase._parse_get_event_response([], api_url=_API_URL, event_id="ev1")
+
+    def test_parse_get_event_response_skips_unrelated_responses_in_batch(self):
+        raw_event = {
+            "id": "ev1",
+            "uid": "u@example.com",
+            "title": "T",
+            "start": "2024-01-01T00:00:00",
+        }
+        matching = ("CalendarEvent/get", {"list": [raw_event], "notFound": []}, "c1")
+        result = _JMAPClientBase._parse_get_event_response(
+            [self._UNRELATED_RESPONSE, matching], api_url=_API_URL, event_id="ev1"
+        )
+        assert result.id == "ev1"
+
+    def test_parse_update_event_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
+            _JMAPClientBase._parse_update_event_response([], api_url=_API_URL, event_id="ev1")
+
+    def test_parse_search_response_returns_empty_list_without_match(self):
+        assert _JMAPClientBase._parse_search_response([], parent=None) == []
+
+    def test_parse_get_sync_token_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/get response"):
+            _JMAPClientBase._parse_get_sync_token_response([], api_url=_API_URL)
+
+    def test_parse_delete_event_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
+            _JMAPClientBase._parse_delete_event_response([], api_url=_API_URL, event_id="ev1")
+
+    def test_parse_get_task_lists_response_returns_empty_list_without_match(self):
+        assert _JMAPClientBase._parse_get_task_lists_response([]) == []
+
+    def test_parse_create_task_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No Task/set response"):
+            _JMAPClientBase._parse_create_task_response([], api_url=_API_URL)
+
+    def test_parse_get_task_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No Task/get response"):
+            _JMAPClientBase._parse_get_task_response([], api_url=_API_URL, task_id="t1")
+
+    def test_parse_update_task_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No Task/set response"):
+            _JMAPClientBase._parse_update_task_response([], api_url=_API_URL, task_id="t1")
+
+    def test_parse_delete_task_response_raises_without_match(self):
+        with pytest.raises(JMAPMethodError, match="No Task/set response"):
+            _JMAPClientBase._parse_delete_task_response([], api_url=_API_URL, task_id="t1")
+
+    def test_parse_event_changes_response_without_match_returns_empty_defaults(self):
+        result = _JMAPClientBase._parse_event_changes_response([], api_url=_API_URL)
+        assert result == ([], [], [], "")
+
+    _UNRELATED_RESPONSE: tuple[str, dict, str] = ("Calendar/changes", {}, "unrelated-0")
+
+    def test_unsupported_null_keys_returns_none_without_match(self):
+        assert (
+            _JMAPClientBase._unsupported_null_keys(
+                [self._UNRELATED_RESPONSE], "ev1", patch={}, nulled=frozenset()
+            )
+            is None
+        )
+
+    def test_unsupported_null_keys_skips_unrelated_responses_in_batch(self):
+        matching = (
+            "CalendarEvent/set",
+            {"notUpdated": {"ev1": {"type": "invalidProperties", "properties": ["title"]}}},
+            "c1",
+        )
+        assert (
+            _JMAPClientBase._unsupported_null_keys(
+                [self._UNRELATED_RESPONSE, matching],
+                "ev1",
+                patch={"title": "x"},
+                nulled=frozenset(),
+            )
+            is None
+        )
+
+    def test_parse_get_calendars_skips_unrelated_responses_in_batch(self):
+        assert (
+            _JMAPClientBase._parse_get_calendars(
+                [self._UNRELATED_RESPONSE], client=None, is_async=False
+            )
+            == []
+        )
+
+    def test_parse_create_event_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
+            _JMAPClientBase._parse_create_event_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL
+            )
+
+    def test_parse_update_event_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
+            _JMAPClientBase._parse_update_event_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL, event_id="ev1"
+            )
+
+    def test_parse_search_response_skips_unrelated_responses_in_batch(self):
+        assert _JMAPClientBase._parse_search_response([self._UNRELATED_RESPONSE], parent=None) == []
+
+    def test_parse_get_sync_token_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/get response"):
+            _JMAPClientBase._parse_get_sync_token_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL
+            )
+
+    def test_parse_event_changes_response_skips_unrelated_responses_in_batch(self):
+        result = _JMAPClientBase._parse_event_changes_response(
+            [("Task/set", {}, "unrelated-0")], api_url=_API_URL
+        )
+        assert result == ([], [], [], "")
+
+    def test_parse_delete_event_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
+            _JMAPClientBase._parse_delete_event_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL, event_id="ev1"
+            )
+
+    def test_parse_get_task_lists_response_skips_unrelated_responses_in_batch(self):
+        assert _JMAPClientBase._parse_get_task_lists_response([self._UNRELATED_RESPONSE]) == []
+
+    def test_parse_create_task_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No Task/set response"):
+            _JMAPClientBase._parse_create_task_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL
+            )
+
+    def test_parse_get_task_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No Task/get response"):
+            _JMAPClientBase._parse_get_task_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
+            )
+
+    def test_parse_update_task_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No Task/set response"):
+            _JMAPClientBase._parse_update_task_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
+            )
+
+    def test_parse_delete_task_response_skips_unrelated_responses_in_batch(self):
+        with pytest.raises(JMAPMethodError, match="No Task/set response"):
+            _JMAPClientBase._parse_delete_task_response(
+                [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
+            )
+
+    def test_assemble_sync_token_result_skips_unrelated_responses_in_batch(self):
+        raw_event = {
+            "id": "ev1",
+            "uid": "u1@example.com",
+            "title": "T",
+            "start": "2024-01-01T00:00:00",
+        }
+        get_response = ("CalendarEvent/get", {"list": [raw_event], "notFound": []}, "c1")
+        added, modified, deleted, token = _JMAPClientBase._assemble_sync_token_result(
+            [self._UNRELATED_RESPONSE, get_response], ["ev1"], [], [], "new-state"
+        )
+        assert len(added) == 1
+        assert added[0].id == "ev1"
+        assert modified == [] and deleted == [] and token == "new-state"
+
+    def test_client_del_swallows_close_exception(self):
+        client = JMAPClient(url="http://x", username="u", password="p")
+        client.close = MagicMock(side_effect=RuntimeError("interpreter shutting down"))
+        client.__del__()  # must not raise
+
+    def test_get_session_fetches_and_caches_on_first_call(self, monkeypatch):
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        fetched = Session(api_url=_API_URL, account_id=_USERNAME, state="fetched-state")
+        mock_fetch = MagicMock(return_value=fetched)
+        monkeypatch.setattr("calendaring_jmap.client.fetch_session", mock_fetch)
+        session = client._get_session()
+        assert session is fetched
+        assert client._session_cache is fetched
+        client._get_session()
+        mock_fetch.assert_called_once()
+
 
 from calendaring_jmap import get_jmap_client
 
@@ -748,6 +1224,81 @@ class TestGetJMAPClient:
         )
         assert isinstance(client, JMAPClient)
         assert not hasattr(client, "some_unrelated_kwarg")
+
+
+from calendaring_jmap import get_async_jmap_client
+
+
+class TestGetAsyncJMAPClient:
+    def test_returns_client_with_explicit_params(self):
+        client = get_async_jmap_client(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        assert isinstance(client, AsyncJMAPClient)
+        assert client.url == _JMAP_URL
+
+    def test_returns_none_when_no_config(self, monkeypatch, tmp_path):
+        for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD", "JMAP_CONFIG_FILE"):
+            monkeypatch.delenv(var, raising=False)
+        client = get_async_jmap_client(config_file=tmp_path / "no-such-file.yaml")
+        assert client is None
+
+    def test_strips_unknown_keys(self):
+        client = get_async_jmap_client(
+            url=_JMAP_URL,
+            username=_USERNAME,
+            password=_PASSWORD,
+            some_unrelated_kwarg=True,
+        )
+        assert isinstance(client, AsyncJMAPClient)
+        assert not hasattr(client, "some_unrelated_kwarg")
+
+
+from calendaring_jmap._config import get_connection_params
+
+
+class TestGetConnectionParamsConfigFile:
+    def test_reads_url_from_yaml_file(self, monkeypatch, tmp_path):
+        for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD"):
+            monkeypatch.delenv(var, raising=False)
+        config_file = tmp_path / "calendar.yaml"
+        config_file.write_text(f"url: {_JMAP_URL}\nusername: {_USERNAME}\n")
+        params = get_connection_params(config_file=config_file)
+        assert params["url"] == _JMAP_URL
+        assert params["username"] == _USERNAME
+
+    def test_yaml_file_drops_keys_outside_conn_keys(self, monkeypatch, tmp_path):
+        for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD"):
+            monkeypatch.delenv(var, raising=False)
+        config_file = tmp_path / "calendar.yaml"
+        config_file.write_text(f"url: {_JMAP_URL}\nirrelevant_key: something\n")
+        params = get_connection_params(config_file=config_file)
+        assert "irrelevant_key" not in params
+
+    def test_yaml_file_non_dict_top_level_is_ignored(self, monkeypatch, tmp_path):
+        for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD"):
+            monkeypatch.delenv(var, raising=False)
+        config_file = tmp_path / "calendar.yaml"
+        config_file.write_text("- just\n- a\n- list\n")
+        params = get_connection_params(config_file=config_file)
+        assert params is None
+
+    def test_explicit_and_env_override_file_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("JMAP_URL", raising=False)
+        monkeypatch.setenv("JMAP_USERNAME", "env-user")
+        config_file = tmp_path / "calendar.yaml"
+        config_file.write_text(f"url: {_JMAP_URL}\nusername: file-user\npassword: file-pass\n")
+        params = get_connection_params(config_file=config_file, password="explicit-pass")
+        assert params["url"] == _JMAP_URL
+        assert params["username"] == "env-user"
+        assert params["password"] == "explicit-pass"
+
+    def test_config_file_env_var_used_when_no_explicit_path(self, monkeypatch, tmp_path):
+        for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD"):
+            monkeypatch.delenv(var, raising=False)
+        config_file = tmp_path / "calendar.yaml"
+        config_file.write_text(f"url: {_JMAP_URL}\n")
+        monkeypatch.setenv("JMAP_CONFIG_FILE", str(config_file))
+        params = get_connection_params()
+        assert params["url"] == _JMAP_URL
 
 
 from calendaring_jmap._methods.event import (
@@ -892,6 +1443,10 @@ class TestEventMethodBuilders:
         _, args, _ = build_event_query_changes("u1", "qstate-1", filter_condition=f, sort=s)
         assert args["filter"] == f
         assert args["sort"] == s
+
+    def test_build_event_query_changes_with_max_changes(self):
+        _, args, _ = build_event_query_changes("u1", "qstate-1", max_changes=25)
+        assert args["maxChanges"] == 25
 
     def test_build_event_set_create_structure(self):
         ev = {
@@ -1047,6 +1602,74 @@ class TestUtils:
         d = date(2024, 6, 15)
         assert _format_local_dt(d) == "2024-06-15T00:00:00"
 
+    def test_duration_to_timedelta_explicit_plus_sign(self):
+        assert _duration_to_timedelta("+PT1H") == timedelta(hours=1)
+
+    def test_duration_to_timedelta_raises_without_p_prefix(self):
+        with pytest.raises(ValueError, match="Invalid duration string"):
+            _duration_to_timedelta("garbage")
+
+    def test_duration_to_timedelta_weeks_only(self):
+        assert _duration_to_timedelta("P2W") == timedelta(weeks=2)
+
+    def test_duration_to_timedelta_weeks_and_days(self):
+        assert _duration_to_timedelta("P1W3D") == timedelta(weeks=1, days=3)
+
+
+class TestFixup:
+    def test_to_normal_str_passes_through_none(self):
+        from calendaring_jmap.convert._fixup import _to_normal_str
+
+        assert _to_normal_str(None) is None
+
+    def test_fixup_decodes_bytes_input(self):
+        from calendaring_jmap.convert._fixup import fixup
+
+        ical_bytes = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:Bytes Event\r\n").encode(
+            "utf-8"
+        )
+        result = fixup(ical_bytes)
+        assert "SUMMARY:Bytes Event" in result
+
+    def test_fixup_drops_duplicate_dtstamp(self):
+        from calendaring_jmap.convert._fixup import fixup
+
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            "UID:dup-dtstamp@example.com\r\n"
+            "DTSTAMP:20240101T000000Z\r\n"
+            "DTSTAMP:20240102T000000Z\r\n"
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Dup Stamp\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = fixup(ical)
+        assert result.count("DTSTAMP:") == 1
+        assert "DTSTAMP:20240101T000000Z" in result
+
+    def test_fixup_drops_duplicate_dtend(self):
+        from calendaring_jmap.convert._fixup import fixup
+
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            "UID:dup-dtend@example.com\r\n"
+            "DTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240615T100000Z\r\n"
+            "DTEND:20240615T110000Z\r\n"
+            "DTEND:20240615T120000Z\r\n"
+            "SUMMARY:Dup End\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = fixup(ical)
+        assert result.count("DTEND:") == 1
+        assert "DTEND:20240615T110000Z" in result
+
+    def test_fixup_truncated_data_without_end_line_skips_dtstamp_fixup(self, caplog):
+        from calendaring_jmap.convert._fixup import fixup
+
+        truncated = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:trunc@example.com\r\n"
+        result = fixup(truncated)
+        assert "DTSTAMP:" not in result
+
 
 class TestIcalToJscal:
     def test_minimal_event(self):
@@ -1175,6 +1798,33 @@ class TestIcalToJscal:
         days = [d["day"] for d in rule["byDay"]]
         assert "mo" in days
         assert "we" in days
+
+    def test_rrule_byday_with_nth_of_period(self):
+        ical = _make_ical(
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Monthly\r\n"
+            "RRULE:FREQ=MONTHLY;BYDAY=2MO\r\n"
+        )
+        result = ical_to_jscal(ical)
+        nday = result["recurrenceRules"][0]["byDay"][0]
+        assert nday["day"] == "mo"
+        assert nday["nthOfPeriod"] == 2
+
+    def test_rrule_all_by_components(self):
+        ical = _make_ical(
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Complex\r\n"
+            "RRULE:FREQ=YEARLY;BYMONTH=6;BYMONTHDAY=15;BYYEARDAY=166;"
+            "BYWEEKNO=24;BYHOUR=14;BYMINUTE=30;BYSECOND=15;BYSETPOS=1\r\n"
+        )
+        result = ical_to_jscal(ical)
+        rule = result["recurrenceRules"][0]
+        assert rule["byMonth"] == ["6"]
+        assert rule["byMonthDay"] == [15]
+        assert rule["byYearDay"] == [166]
+        assert rule["byWeekNo"] == [24]
+        assert rule["byHour"] == [14]
+        assert rule["byMinute"] == [30]
+        assert rule["bySecond"] == [15]
+        assert rule["bySetPosition"] == [1]
 
     def test_exdate(self):
         ical = _make_ical(
@@ -1329,6 +1979,278 @@ class TestIcalToJscal:
         with pytest.raises((ValueError, Exception)):
             ical_to_jscal(ical)
 
+    def test_organizer_without_cn(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\nORGANIZER:mailto:alice@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        organizer = next(iter(result["participants"].values()))
+        assert "name" not in organizer
+        assert organizer["email"] == "alice@example.com"
+
+    def test_attendee_without_partstat(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\nATTENDEE:mailto:bob@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        attendee = next(iter(result["participants"].values()))
+        assert "participationStatus" not in attendee
+
+    def test_attendee_rsvp_true(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\n"
+            "ATTENDEE;RSVP=TRUE:mailto:bob@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        attendee = next(iter(result["participants"].values()))
+        assert attendee["expectReply"] is True
+
+    def test_attendee_cutype_room(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\n"
+            "ATTENDEE;CUTYPE=ROOM:mailto:room1@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        attendee = next(iter(result["participants"].values()))
+        assert attendee["kind"] == "room"
+
+    def test_attendee_role_chair(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\n"
+            "ATTENDEE;ROLE=CHAIR:mailto:chair@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        attendee = next(iter(result["participants"].values()))
+        assert attendee["roles"]["chair"] is True
+
+    def test_multiple_attendees(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\n"
+            "ATTENDEE:mailto:bob@example.com\r\n"
+            "ATTENDEE:mailto:carol@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        emails = {p["email"] for p in result["participants"].values()}
+        assert emails == {"bob@example.com", "carol@example.com"}
+
+    def test_valarm_without_trigger(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:No Trigger\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\n"
+        )
+        result = ical_to_jscal(ical)
+        alert = next(iter(result["alerts"].values()))
+        assert "trigger" not in alert
+        assert alert["description"] == "Reminder"
+
+    def test_exdate_single_value_not_list(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Recurring\r\n"
+            "RRULE:FREQ=DAILY\r\nEXDATE:20240616T100000Z\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert "recurrenceOverrides" in result
+        assert len(result["recurrenceOverrides"]) == 1
+
+    def test_exdate_multiple_lines_already_a_list(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Recurring\r\n"
+            "RRULE:FREQ=DAILY\r\nEXDATE:20240616T100000Z\r\nEXDATE:20240617T100000Z\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert len(result["recurrenceOverrides"]) == 2
+
+    def test_rrule_multiple_lines_already_a_list(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Multi RRULE\r\n"
+            "RRULE:FREQ=DAILY\r\nRRULE:FREQ=WEEKLY\r\n"
+        )
+        result = ical_to_jscal(ical)
+        freqs = {r["frequency"] for r in result["recurrenceRules"]}
+        assert freqs == {"daily", "weekly"}
+
+    def test_exrule_multiple_lines_already_a_list(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Multi EXRULE\r\n"
+            "RRULE:FREQ=DAILY\r\nEXRULE:FREQ=DAILY;BYDAY=SU\r\nEXRULE:FREQ=DAILY;BYDAY=SA\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert len(result["excludedRecurrenceRules"]) == 2
+
+    def test_valarm_trigger_neither_duration_nor_datetime(self):
+        from calendaring_jmap.convert.ical_to_jscal import _valarm_to_alert
+
+        alarm = MagicMock()
+        alarm.get.side_effect = lambda key, default=None: {
+            "ACTION": "DISPLAY",
+            "TRIGGER": MagicMock(dt="not a duration or datetime"),
+            "DESCRIPTION": None,
+        }.get(key, default)
+        _, alert = _valarm_to_alert(alarm)
+        assert "trigger" not in alert
+
+    def test_categories_property_present_but_empty_omits_keywords_key(self, monkeypatch):
+        import sys
+
+        ical_to_jscal_module = sys.modules["calendaring_jmap.convert.ical_to_jscal"]
+        monkeypatch.setattr(ical_to_jscal_module, "_categories_to_keywords", lambda prop: {})
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:Empty Cats\r\nCATEGORIES:work\r\n")
+        result = ical_to_jscal_module.ical_to_jscal(ical)
+        assert "keywords" not in result
+
+    def test_non_event_subcomponent_is_skipped(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nEND:VTIMEZONE\r\n"
+            "BEGIN:VEVENT\r\nUID:tz-skip@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240615T100000Z\r\nSUMMARY:With Timezone Component\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert result["title"] == "With Timezone Component"
+
+    def test_second_master_vevent_without_recurrence_id_is_ignored(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:first@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240615T100000Z\r\nSUMMARY:First\r\n"
+            "END:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:second@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240616T100000Z\r\nSUMMARY:Second\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert result["title"] == "First"
+
+    def test_no_vevent_component_raises(self):
+        ical = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\nEND:VCALENDAR\r\n"
+        with pytest.raises(ValueError, match="No VEVENT component found"):
+            ical_to_jscal(ical)
+
+    def test_description(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Has Desc\r\nDESCRIPTION:Some notes here\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert result["description"] == "Some notes here"
+
+    def test_priority_zero_is_omitted(self):
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:No Priority\r\nPRIORITY:0\r\n")
+        result = ical_to_jscal(ical)
+        assert "priority" not in result
+
+    def test_class_unrecognized_value_omits_privacy(self):
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:Public\r\nCLASS:PUBLIC\r\n")
+        result = ical_to_jscal(ical)
+        assert "privacy" not in result
+
+    def test_status_unrecognized_value_omits_status(self):
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:Draft\r\nSTATUS:X-DRAFT\r\n")
+        result = ical_to_jscal(ical)
+        assert "status" not in result
+
+    def test_exrule_single_value_not_list(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Excluded\r\n"
+            "RRULE:FREQ=DAILY\r\nEXRULE:FREQ=DAILY;BYDAY=SU\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert len(result["excludedRecurrenceRules"]) == 1
+        assert result["excludedRecurrenceRules"][0]["frequency"] == "daily"
+
+    def test_recurrence_override_with_no_changed_fields_is_empty_patch(self):
+        # Override VEVENT carries only RECURRENCE-ID + SUMMARY matching the
+        # master: no DTSTART/DURATION/DESCRIPTION override, so the patch has
+        # nothing to record beyond the occurrence key itself.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:same-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:same-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override == {}
+
+    def test_recurrence_override_with_changed_start_and_description(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:full-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "DESCRIPTION:Master notes\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:full-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nDTSTART:20240624T160000Z\r\n"
+            "DESCRIPTION:Override notes\r\nSUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override["start"] == "2024-06-24T16:00:00"
+        assert override["description"] == "Override notes"
+        assert "duration" not in override
+
+    def test_recurrence_override_dtstart_matching_master_is_not_in_patch(self):
+        # Override explicitly repeats a DTSTART that converts to the same
+        # JSCalendar start string as the master: not a real change, so it
+        # must not appear in the patch.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samestart-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samestart-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nDTSTART:20240617T140000Z\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "start" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_duration_matching_master_is_not_in_patch(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samedur-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samedur-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nDURATION:PT1H\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "duration" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_with_changed_duration(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:dur-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:dur-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nDURATION:PT2H\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override == {"duration": "PT2H"}
+
+    def test_categories_bare_text_fallback(self):
+        from icalendar.prop import vText
+
+        from calendaring_jmap.convert.ical_to_jscal import _categories_to_keywords
+
+        assert _categories_to_keywords(vText("work, standup")) == {"work": True, "standup": True}
+
+    def test_categories_list_with_non_vcategory_item(self):
+        from icalendar.prop import vText
+
+        from calendaring_jmap.convert.ical_to_jscal import _categories_to_keywords
+
+        assert _categories_to_keywords([vText("solo")]) == {"solo": True}
+
 
 class TestJscalToIcal:
     def test_minimal_event(self):
@@ -1459,6 +2381,407 @@ class TestJscalToIcal:
     def test_color_emitted(self):
         result = jscal_to_ical(_minimal_jscal(color="blue"))
         assert "COLOR:blue" in result
+
+    def test_start_non_iana_tzid_falls_back_to_raw_tzid_param(self):
+        jscal = _minimal_jscal(start="2024-06-15T10:00:00", timeZone="Eastern Standard Time")
+        result = jscal_to_ical(jscal)
+        assert "TZID=Eastern Standard Time" in result
+
+    def test_rrule_missing_frequency_omits_rrule(self):
+        jscal = _minimal_jscal(recurrenceRules=[{"@type": "RecurrenceRule"}])
+        result = jscal_to_ical(jscal)
+        assert "RRULE" not in result
+
+    def test_rrule_interval_emitted_when_not_one(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "daily", "interval": 3}]
+        )
+        result = jscal_to_ical(jscal)
+        assert "INTERVAL=3" in result
+
+    def test_rrule_count_emitted(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "daily", "count": 5}]
+        )
+        result = jscal_to_ical(jscal)
+        assert "COUNT=5" in result
+
+    def test_rrule_until_utc_z_suffix(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[
+                {"@type": "RecurrenceRule", "frequency": "daily", "until": "2024-07-01T12:00:00Z"}
+            ]
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        assert "UNTIL=20240701T120000Z" in result
+
+    def test_rrule_until_no_time_zone_emits_floating(self):
+        jscal = {
+            "uid": "no-tz-until@example.com",
+            "title": "No TZ",
+            "start": "2024-06-15T10:00:00",
+            "duration": "PT1H",
+            "recurrenceRules": [
+                {"@type": "RecurrenceRule", "frequency": "daily", "until": "2024-07-01T12:00:00"}
+            ],
+        }
+        result = jscal_to_ical(jscal)
+        assert "UNTIL=20240701T120000" in result
+        assert "UNTIL=20240701T120000Z" not in result
+
+    def test_rrule_until_non_iana_time_zone_passthrough(self):
+        jscal = _minimal_jscal(
+            timeZone="Eastern Standard Time",
+            recurrenceRules=[
+                {"@type": "RecurrenceRule", "frequency": "daily", "until": "2024-07-01T12:00:00"}
+            ],
+        )
+        result = jscal_to_ical(jscal)
+        assert "UNTIL=20240701T120000" in result
+
+    def test_rrule_by_month_by_month_day_by_year_day_by_week_no(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[
+                {
+                    "@type": "RecurrenceRule",
+                    "frequency": "yearly",
+                    "byMonth": ["6"],
+                    "byMonthDay": [15],
+                    "byYearDay": [166],
+                    "byWeekNo": [24],
+                    "byHour": [14],
+                    "byMinute": [30],
+                    "bySecond": [15],
+                    "bySetPosition": [1],
+                }
+            ]
+        )
+        result = jscal_to_ical(jscal)
+        unfolded = result.replace("\r\n ", "").replace("\n ", "")
+        assert "BYMONTH=6" in unfolded
+        assert "BYMONTHDAY=15" in unfolded
+        assert "BYYEARDAY=166" in unfolded
+        assert "BYWEEKNO=24" in unfolded
+        assert "BYHOUR=14" in unfolded
+        assert "BYMINUTE=30" in unfolded
+        assert "BYSECOND=15" in unfolded
+        assert "BYSETPOS=1" in unfolded
+
+    def test_rrule_first_day_of_week_non_default_emitted(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[
+                {"@type": "RecurrenceRule", "frequency": "weekly", "firstDayOfWeek": "su"}
+            ]
+        )
+        result = jscal_to_ical(jscal)
+        assert "WKST=SU" in result
+
+    def test_participant_imip_gets_mailto_prefix_when_missing(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "email": "bob@example.com",
+                    "sendTo": {"other": "bob@example.com"},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "mailto:bob@example.com" in result
+
+    def test_organizer_without_name_has_no_cn(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"owner": True, "organizer": True},
+                    "email": "alice@example.com",
+                    "sendTo": {"imip": "mailto:alice@example.com"},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "CN=" not in result
+
+    def test_attendee_without_name_has_no_cn(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "email": "bob@example.com",
+                    "sendTo": {"imip": "mailto:bob@example.com"},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "CN=" not in result
+
+    def test_attendee_without_partstat_defaults_needs_action(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "email": "bob@example.com",
+                    "sendTo": {"imip": "mailto:bob@example.com"},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "PARTSTAT=NEEDS-ACTION" in result
+
+    def test_attendee_expect_reply_sets_rsvp(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "email": "bob@example.com",
+                    "sendTo": {"imip": "mailto:bob@example.com"},
+                    "expectReply": True,
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "RSVP=TRUE" in result
+
+    def test_attendee_kind_sets_cutype(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "email": "room1@example.com",
+                    "sendTo": {"imip": "mailto:room1@example.com"},
+                    "kind": "room",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "CUTYPE=ROOM" in result
+
+    def test_attendee_chair_role_sets_role_chair(self):
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"chair": True},
+                    "email": "chair@example.com",
+                    "sendTo": {"imip": "mailto:chair@example.com"},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "ROLE=CHAIR" in result
+
+    def test_participant_with_empty_roles_still_emitted_as_attendee(self):
+        # A participant with no roles set is not purely an organizer/owner,
+        # so _participant_to_attendee treats it as an attendee by default.
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {},
+                    "email": "ghost@example.com",
+                    "sendTo": {"imip": "mailto:ghost@example.com"},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "ATTENDEE" in result
+        assert "ghost@example.com" in result
+        assert "ORGANIZER" not in result
+
+    def test_rrule_byday_with_nth_of_period(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[
+                {
+                    "@type": "RecurrenceRule",
+                    "frequency": "monthly",
+                    "byDay": [{"@type": "NDay", "day": "mo", "nthOfPeriod": 2}],
+                }
+            ]
+        )
+        result = jscal_to_ical(jscal)
+        assert "BYDAY=2MO" in result
+
+    def test_alert_absolute_utc_trigger(self):
+        jscal = _minimal_jscal(
+            alerts={"al1": {"trigger": "2024-06-15T09:30:00Z", "action": "display"}}
+        )
+        result = jscal_to_ical(jscal)
+        assert "TRIGGER:20240615T093000Z" in result
+
+    def test_alert_malformed_absolute_trigger_falls_back_to_zero(self):
+        jscal = _minimal_jscal(
+            alerts={"al1": {"trigger": "2024-99-99T00:00:00Z", "action": "display"}}
+        )
+        result = jscal_to_ical(jscal)
+        assert "TRIGGER" in result
+
+    def test_alert_malformed_relative_trigger_falls_back_to_zero(self):
+        jscal = _minimal_jscal(alerts={"al1": {"trigger": "not-a-duration", "action": "display"}})
+        result = jscal_to_ical(jscal)
+        assert "TRIGGER" in result
+
+    def test_alert_missing_trigger_defaults_to_zero(self):
+        jscal = _minimal_jscal(alerts={"al1": {"action": "display"}})
+        result = jscal_to_ical(jscal)
+        assert "TRIGGER" in result
+
+    def test_alert_non_display_action_without_description_omits_reminder_text(self):
+        jscal = _minimal_jscal(alerts={"al1": {"trigger": "-PT15M", "action": "email"}})
+        result = jscal_to_ical(jscal)
+        assert "DESCRIPTION:Reminder" not in result
+
+    def test_locations_present_but_without_name_omits_location(self):
+        jscal = _minimal_jscal(locations={"loc1": {}})
+        result = jscal_to_ical(jscal)
+        assert "LOCATION" not in result
+
+    def test_missing_uid_omits_uid_line(self):
+        jscal = {
+            "title": "No UID",
+            "start": "2024-06-15T10:00:00",
+            "timeZone": "Europe/Berlin",
+            "duration": "PT1H",
+        }
+        result = jscal_to_ical(jscal)
+        assert "UID:" not in result
+
+    def test_missing_start_omits_dtstart(self):
+        jscal = {"uid": "no-start@example.com", "title": "No Start", "duration": "PT1H"}
+        result = jscal_to_ical(jscal)
+        assert "DTSTART" not in result
+
+    def test_description_emitted(self):
+        jscal = _minimal_jscal(description="Some notes")
+        result = jscal_to_ical(jscal)
+        assert "DESCRIPTION:Some notes" in result
+
+    def test_privacy_unrecognized_value_omits_class(self):
+        jscal = _minimal_jscal(privacy="public")
+        result = jscal_to_ical(jscal)
+        assert "CLASS" not in result
+
+    def test_keywords_present_but_all_falsy_omits_categories(self):
+        jscal = _minimal_jscal(keywords={"work": False})
+        result = jscal_to_ical(jscal)
+        assert "CATEGORIES" not in result
+
+    def test_status_unrecognized_value_omits_status(self):
+        jscal = _minimal_jscal(status="x-draft")
+        result = jscal_to_ical(jscal)
+        assert "STATUS" not in result
+
+    def test_recurrence_rule_without_frequency_is_skipped(self):
+        jscal = _minimal_jscal(
+            recurrenceRules=[
+                {"@type": "RecurrenceRule", "frequency": "weekly"},
+                {"@type": "RecurrenceRule"},
+            ]
+        )
+        result = jscal_to_ical(jscal)
+        assert result.count("RRULE") == 1
+
+    def test_recurrence_override_key_non_iana_time_zone_passthrough(self):
+        jscal = _minimal_jscal(
+            timeZone="Eastern Standard Time",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-22T10:00:00": {"title": "Moved"}},
+        )
+        result = jscal_to_ical(jscal)
+        assert result.count("BEGIN:VEVENT") == 2
+        assert "Moved" in result
+
+    def test_recurrence_override_duration_defaults_to_master_duration(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-24T14:00:00Z": {"title": "Renamed Only"}},
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        assert result.count("DURATION:PT1H") == 2
+
+    def test_recurrence_override_title_defaults_to_master_title(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-24T14:00:00Z": {"start": "2024-06-24T16:00:00Z"}},
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        assert result.count("SUMMARY:Test Event") == 2
+
+    def test_excluded_recurrence_rule_without_frequency_is_skipped(self):
+        jscal = _minimal_jscal(
+            excludedRecurrenceRules=[
+                {"@type": "RecurrenceRule", "frequency": "weekly"},
+                {"@type": "RecurrenceRule"},
+            ]
+        )
+        result = jscal_to_ical(jscal)
+        assert result.count("EXRULE") == 1
+
+    def test_recurrence_override_floating_key_no_timezone_no_allday(self):
+        jscal = {
+            "uid": "floating-override@example.com",
+            "title": "Floating Master",
+            "start": "2024-06-17T14:00:00",
+            "duration": "PT1H",
+            "recurrenceRules": [{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            "recurrenceOverrides": {"2024-06-24T14:00:00": {"title": "Floating Override"}},
+        }
+        result = jscal_to_ical(jscal)
+        assert result.count("BEGIN:VEVENT") == 2
+        assert "Floating Override" in result
+
+    def test_recurrence_override_with_explicitly_empty_start_uses_no_dtstart_on_child(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-24T14:00:00Z": {"start": "", "title": "No Start Child"}},
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        child_block = events[2]
+        assert "DTSTART" not in child_block
+
+    def test_recurrence_override_with_p0d_duration_omits_child_duration(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {"duration": "P0D", "title": "Zero Duration Child"}
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        child_block = events[2]
+        assert "DURATION" not in child_block
+
+    def test_recurrence_override_with_explicitly_empty_title_omits_child_summary(self):
+        jscal = {
+            "uid": "no-title-master@example.com",
+            "title": "",
+            "start": "2024-06-17T14:00:00Z",
+            "duration": "PT1H",
+            "recurrenceRules": [{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            "recurrenceOverrides": {"2024-06-24T14:00:00Z": {"title": ""}},
+        }
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        child_block = events[2]
+        assert "SUMMARY" not in child_block
+
+    def test_recurrence_override_description_defaults_to_master_description(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            description="Master notes",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-24T14:00:00Z": {"start": "2024-06-24T16:00:00Z"}},
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        assert result.count("DESCRIPTION:Master notes") == 2
 
     def test_exrule_from_excluded_recurrence_rules(self):
         jscal = _minimal_jscal(
@@ -1860,7 +3183,33 @@ class TestJMAPClientEvents:
         assert "filter" not in query_args
 
 
-class TestJMAPClientSync:
+class _MockedClientMixin:
+    """Shared client/response mocking for tests that drive JMAPClient
+    through a mocked ``_http_session`` rather than real HTTP calls."""
+
+    def _make_mock(self, resp_json):
+        m = MagicMock()
+        m.status_code = 200
+        m.json.return_value = resp_json
+        m.raise_for_status = MagicMock()
+        return m
+
+    def _make_client(self):
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
+        return client
+
+    def _mock_http(self, client, response=None, side_effect=None):
+        mock_http = MagicMock()
+        if side_effect is not None:
+            mock_http.post.side_effect = side_effect
+        elif response is not None:
+            mock_http.post.return_value = response
+        client._http_session = mock_http
+        return mock_http
+
+
+class TestJMAPClientSync(_MockedClientMixin):
     _RAW_EVENT = {
         "id": "ev1",
         "uid": "test-uid@example.com",
@@ -1907,27 +3256,6 @@ class TestJMAPClientSync:
                 ]
             ]
         }
-
-    def _make_mock(self, resp_json):
-        m = MagicMock()
-        m.status_code = 200
-        m.json.return_value = resp_json
-        m.raise_for_status = MagicMock()
-        return m
-
-    def _make_client(self):
-        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
-        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
-        return client
-
-    def _mock_http(self, client, response=None, side_effect=None):
-        mock_http = MagicMock()
-        if side_effect is not None:
-            mock_http.post.side_effect = side_effect
-        elif response is not None:
-            mock_http.post.return_value = response
-        client._http_session = mock_http
-        return mock_http
 
     def test_get_sync_token_returns_state(self):
         resp = self._get_resp_with_state([], state="tok-1")
@@ -2048,6 +3376,14 @@ class TestTaskMethodBuilders:
         _, args, _ = build_task_get("u1", ids=["t1", "t2"])
         assert args["ids"] == ["t1", "t2"]
 
+    def test_build_task_get_with_properties(self):
+        _, args, _ = build_task_get("u1", properties=["id", "title"])
+        assert args["properties"] == ["id", "title"]
+
+    def test_build_task_list_get_with_properties(self):
+        _, args, _ = build_task_list_get("u1", properties=["id", "name"])
+        assert args["properties"] == ["id", "name"]
+
     def test_build_task_set_create_structure(self):
         task = {"@type": "Task", "uid": "uid-1", "taskListId": "tl1", "title": "Buy milk"}
         method, args, call_id = build_task_set_create("acct1", {"new-0": task})
@@ -2104,7 +3440,7 @@ class TestTaskMethodBuilders:
         assert not_created == {"new-1": {"type": "invalidArguments"}}
 
 
-class TestJMAPClientTasks:
+class TestJMAPClientTasks(_MockedClientMixin):
     _MINIMAL_TASK = {
         "id": "task1",
         "uid": "uid-task-1@example.com",
@@ -2144,27 +3480,6 @@ class TestJMAPClientTasks:
                 ]
             ]
         }
-
-    def _make_mock(self, resp_json):
-        m = MagicMock()
-        m.status_code = 200
-        m.json.return_value = resp_json
-        m.raise_for_status = MagicMock()
-        return m
-
-    def _make_client(self):
-        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
-        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
-        return client
-
-    def _mock_http(self, client, response=None, side_effect=None):
-        mock_http = MagicMock()
-        if side_effect is not None:
-            mock_http.post.side_effect = side_effect
-        elif response is not None:
-            mock_http.post.return_value = response
-        client._http_session = mock_http
-        return mock_http
 
     def test_get_task_lists_returns_list(self):
         resp = self._tasklist_response([self._MINIMAL_TASKLIST])
@@ -2775,6 +4090,91 @@ class TestAsyncJMAPClient:
         new_task = create_args["create"]["new-0"]
         assert new_task["taskListId"] == "tl-target"
 
+    @pytest.mark.asyncio
+    async def test_request_raises_auth_error_on_401(self, monkeypatch):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.raise_for_status = MagicMock()
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        with pytest.raises(JMAPAuthError):
+            await self._make_client()._request([("Calendar/get", {"accountId": _USERNAME}, "c0")])
+
+    @pytest.mark.asyncio
+    async def test_request_raises_method_error_on_error_response(self, monkeypatch):
+        error_response = {"methodResponses": [["error", {"type": "unknownMethod"}, "c0"]]}
+        self._patch_async_session(monkeypatch, error_response)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client()._request([("Calendar/get", {"accountId": _USERNAME}, "c0")])
+        assert exc_info.value.error_type == "unknownMethod"
+
+    @pytest.mark.asyncio
+    async def test_get_session_fetches_and_caches_on_first_call(self, monkeypatch):
+        client = AsyncJMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        fetched = Session(api_url=_API_URL, account_id=_USERNAME, state="fetched-state")
+        mock_fetch = AsyncMock(return_value=fetched)
+        monkeypatch.setattr("calendaring_jmap.async_client.async_fetch_session", mock_fetch)
+        session = await client._get_session()
+        assert session is fetched
+        assert client._session_cache is fetched
+        await client._get_session()
+        mock_fetch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_object_by_uid_found(self, monkeypatch):
+        client, _ = self._capturing_async_session(
+            monkeypatch, self._query_get_resp([self._RAW_EVENT])
+        )
+        result = await client._get_object_by_uid("async-test-uid@example.com")
+        assert isinstance(result, JMAPCalendarObject)
+        assert result.id == "ev-async-1"
+
+    @pytest.mark.asyncio
+    async def test_get_object_by_uid_not_found(self, monkeypatch):
+        client, _ = self._capturing_async_session(
+            monkeypatch, self._query_get_resp([self._RAW_EVENT])
+        )
+        with pytest.raises(JMAPMethodError, match="No calendar object found with UID"):
+            await client._get_object_by_uid("no-such-uid@example.com")
+
+    @pytest.mark.asyncio
+    async def test_update_event_retries_dropping_server_rejected_null_keys(self, monkeypatch):
+        def reject(prop):
+            return self._event_set_resp(
+                notUpdated={
+                    "ev-async-1": {
+                        "type": "invalidProperties",
+                        "description": "Invalid property.",
+                        "properties": [prop],
+                    }
+                }
+            )
+
+        responses = [
+            reject("recurrenceRules"),
+            self._event_set_resp(updated={"ev-async-1": None}, notUpdated={}),
+        ]
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        patches_seen = []
+
+        async def post(*args, **kwargs):
+            body = kwargs.get("json", {})
+            update = body["methodCalls"][0][1].get("update")
+            patches_seen.append(dict(update["ev-async-1"]))
+            return self._make_mock_response(responses.pop(0))
+
+        mock_http.post = post
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        await self._make_client().update_event("ev-async-1", self._MINIMAL_ICAL)
+        assert len(patches_seen) == 2
+        assert patches_seen[0]["recurrenceRules"] is None
+        assert "recurrenceRules" not in patches_seen[1]
+
 
 class TestOverrideWithoutStartUsesOccurrenceTime:
     """§4.1: override child VEVENT must use occurrence time as DTSTART, not master start."""
@@ -3022,3 +4422,33 @@ class TestJMAPSessionRelease:
         async with self._make_async_client() as client:
             client._get_http_session()
         assert client._http_session is None
+
+    @pytest.mark.asyncio
+    async def test_aclose_is_idempotent(self):
+        client = self._make_async_client()
+        client._get_http_session()
+        await client.aclose()
+        await client.aclose()
+        assert client._http_session is None
+
+    def test_del_warns_when_session_left_open(self):
+        client = self._make_async_client()
+        client._http_session = MagicMock()
+        with pytest.warns(ResourceWarning, match="garbage collected with an open HTTP"):
+            client.__del__()
+
+    def test_del_does_not_warn_when_session_already_closed(self):
+        client = self._make_async_client()
+        client._http_session = None
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            client.__del__()
+
+    def test_del_suppresses_exception_from_warn(self, monkeypatch):
+        client = self._make_async_client()
+        client._http_session = MagicMock()
+        monkeypatch.setattr(
+            "calendaring_jmap.async_client.warnings.warn",
+            MagicMock(side_effect=RuntimeError("warnings machinery torn down")),
+        )
+        client.__del__()  # must not raise
