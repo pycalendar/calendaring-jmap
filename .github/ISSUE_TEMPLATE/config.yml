@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+blank_issues_enabled: true
+contact_links:
+  - name: Discussions
+    url: https://github.com/pycalendar/calendaring-jmap/discussions
+    about: For questions, ideas, and community discussions
