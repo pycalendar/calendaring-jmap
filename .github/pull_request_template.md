@@ -1,0 +1,67 @@
+<!--- SPDX-FileCopyrightText: 2026 calendaring-jmap contributors -->
+<!--- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
+<!--
+
+INSTRUCTIONS
+
+Fill out the pull request template as described below.
+
+Do not edit or remove section headings as they are required, except "Additional information" which is optional.
+
+Comments may be removed.
+Comments consist of the content between each pair of HTML comment delimiters, inclusively.
+
+-->
+
+## Linked issue
+
+<!--
+Replace `ISSUE_NUMBER` with the issue number that your pull request addresses.
+This links the pull request to the related issue.
+
+Choose the appropriate form:
+
+- If you completely resolve the issue, then use `"Closes"`.
+  This form will automatically close the related issue when the PR gets merged.
+- If you contribute to solving part of the issue, use "Contributes to".
+  This form keeps the issue open for future work.
+-->
+
+- Closes #ISSUE_NUMBER
+- Contributes to #ISSUE_NUMBER
+
+<!--
+You may also link to open pull requests that address the same issue, if applicable.
+
+- See #PULL_REQUEST_NUMBER
+-->
+
+## Description
+
+<!--
+Write a description of the fixes or improvements.
+-->
+
+## Checklist
+
+<!--
+Do not edit the checkbox list items.
+
+To indicate that you completed an item, place an `x` inside the checkbox, such as `[x]`.
+-->
+
+- [ ] I added a change log entry, following the [change log instructions](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html#change-log).
+- [ ] I followed calendaring-jmap's [Artificial intelligence policy](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html#artificial-intelligence-policy) and disclosed my AI use in my commit messages and change log entry, if applicable.
+- [ ] I added or updated tests, if applicable.
+- [ ] I ran and ensured all tests pass locally, following [Running tests](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html#running-tests).
+- [ ] If this changes a client method, I updated both `JMAPClient` and `AsyncJMAPClient` to keep the sync/async surfaces in parity.
+- [ ] If this changes iCalendar↔JSCalendar conversion, I checked the change against [RFC 8984](https://www.rfc-editor.org/rfc/rfc8984) and added a round-trip test.
+- [ ] I ran the integration tests against Cyrus, Stalwart, or both, if the change touches client/server interaction.
+- [ ] I added or edited documentation as necessary.
+
+## Additional information
+
+<!--
+Upload screenshots, videos, links to documentation, or any other relevant information.
+-->

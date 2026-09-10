@@ -5,7 +5,9 @@
 
 Calendar operations over JMAP (RFC 8620 + draft-ietf-jmap-calendars).
 
+[![Documentation](https://readthedocs.org/projects/calendaring-jmap/badge/?version=stable)](https://calendaring-jmap.readthedocs.io/en/stable/)
 [![Tests](https://github.com/pycalendar/calendaring-jmap/actions/workflows/tests.yml/badge.svg)](https://github.com/pycalendar/calendaring-jmap/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/pycalendar/calendaring-jmap/branch/main/graph/badge.svg)](https://codecov.io/gh/pycalendar/calendaring-jmap)
 [![REUSE status](https://api.reuse.software/badge/github.com/pycalendar/calendaring-jmap)](https://api.reuse.software/info/github.com/pycalendar/calendaring-jmap)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL%203.0--or--later-blue.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
