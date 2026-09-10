@@ -9,8 +9,7 @@ Installation
 
     pip install calendaring-jmap
 
-Not yet published to PyPI — this package is mid-extraction from python-caldav
-(see `#9 <https://github.com/pycalendar/calendaring-jmap/issues/9>`_).
+Not yet published to PyPI.
 
 From source
 ===========

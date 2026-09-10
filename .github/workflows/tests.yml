@@ -93,16 +93,9 @@ jobs:
 
       - name: Run tests
         run: |
-          set +e
           pytest --cov --cov-branch --cov-report=xml \
             --junitxml=junit.xml -o junit_family=legacy \
-            tests/test_jmap_unit.py
-          ec=$?
-          # Exit 5 = no tests collected. Expected until #9 lands the real
-          # extracted test suite; anything else is a genuine failure.
-          if [ "$ec" -ne 0 ] && [ "$ec" -ne 5 ]; then
-            exit "$ec"
-          fi
+            src/calendaring_jmap/tests/test_jmap_unit.py
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}

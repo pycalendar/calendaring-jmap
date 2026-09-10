@@ -3,7 +3,7 @@
 
 # calendaring-jmap
 
-Calendar operations over JMAP (RFC 8620 + draft-ietf-jmap-calendars), mirroring the public API of [python-caldav](https://github.com/python-caldav/caldav) so user code works against either protocol unmodified.
+Calendar operations over JMAP (RFC 8620 + draft-ietf-jmap-calendars).
 
 [![Tests](https://github.com/pycalendar/calendaring-jmap/actions/workflows/tests.yml/badge.svg)](https://github.com/pycalendar/calendaring-jmap/actions/workflows/tests.yml)
 [![REUSE status](https://api.reuse.software/badge/github.com/pycalendar/calendaring-jmap)](https://api.reuse.software/info/github.com/pycalendar/calendaring-jmap)
@@ -16,28 +16,34 @@ Calendar operations over JMAP (RFC 8620 + draft-ietf-jmap-calendars), mirroring 
 pip install calendaring-jmap
 ```
 
-Not yet published to PyPI — this package is mid-extraction from python-caldav (see [#9](https://github.com/pycalendar/calendaring-jmap/issues/9)).
+Not yet published to PyPI.
 
 ## Usage
 
-The library is being extracted from python-caldav's `caldav/jmap/` module ([#9](https://github.com/pycalendar/calendaring-jmap/issues/9)) and doesn't have working code here yet. Once that lands, this section will cover listing calendars, creating events, and incremental sync.
+```python
+from calendaring_jmap import get_jmap_client
 
-In the meantime, see python-caldav's existing JMAP docs: https://caldav.readthedocs.io/v3.0.0/jmap.html
+with get_jmap_client(
+    url="https://jmap.example.com/.well-known/jmap",
+    username="alice",
+    password="secret",
+) as client:
+    calendars = client.get_calendars()
+    for cal in calendars:
+        print(cal.name)
+```
+
+See the [quickstart](https://calendaring-jmap.readthedocs.io/en/latest/usage/quickstart.html) for authentication options, error handling, and configuration from environment variables or a YAML file.
 
 ## Documentation
 
-Full documentation: https://calendaring-jmap.readthedocs.io/ (coming with [#8](https://github.com/pycalendar/calendaring-jmap/issues/8))
+Full documentation: https://calendaring-jmap.readthedocs.io/
 
 ## Specs
 
-- [RFC 8620](https://www.rfc-editor.org/rfc/rfc8620) — JMAP core
-- [draft-ietf-jmap-calendars](https://datatracker.ietf.org/doc/draft-ietf-jmap-calendars/) — JMAP Calendars
-- [RFC 8984](https://www.rfc-editor.org/rfc/rfc8984) — JSCalendar
-
-## Related
-
-- [python-caldav](https://github.com/python-caldav/caldav) — CalDAV client, source of this package's JMAP module
-- [icalendar](https://github.com/collective/icalendar) — iCalendar parsing, used by both
+- [RFC 8620](https://www.rfc-editor.org/rfc/rfc8620): JMAP core
+- [draft-ietf-jmap-calendars](https://datatracker.ietf.org/doc/draft-ietf-jmap-calendars/): JMAP Calendars
+- [RFC 8984](https://www.rfc-editor.org/rfc/rfc8984): JSCalendar
 
 ## Contributing
 
