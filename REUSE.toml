@@ -24,3 +24,10 @@ path = "news/*"
 precedence = "override"
 SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# JSON, no comment syntax available
+[[annotations]]
+path = "tests/docker/stalwart/config/config.json"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
