@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any, Literal
 
 from calendaring_jmap._http import HTTPBasicAuth, HTTPBearerAuth, requests
 from calendaring_jmap._methods.calendar import build_calendar_get, parse_calendar_get
@@ -67,7 +68,10 @@ class _JMAPClientBase:
         self.password = password
         self.timeout = timeout
         self._session_cache: Session | None = None
-        self._http_session = None
+        ## Holds a requests/niquests Session for JMAPClient or a niquests
+        ## AsyncSession for AsyncJMAPClient; the two subclasses' concrete
+        ## session types have no common typed base to name here.
+        self._http_session: Any = None
 
         if auth is not None:
             self._auth = auth
@@ -224,7 +228,7 @@ class _JMAPClientBase:
     # ---------------------------------------------------------------------------
 
     @staticmethod
-    def _parse_get_calendars(responses: list, client, is_async: bool) -> list[JMAPCalendar]:
+    def _parse_get_calendars(responses: list, client, is_async: bool) -> list[JMAPCalendar[Any]]:
         for method_name, resp_args, _ in responses:
             if method_name == "Calendar/get":
                 calendars = parse_calendar_get(resp_args)
@@ -526,7 +530,7 @@ class JMAPClient(_JMAPClientBase):
 
         return method_responses
 
-    def get_calendars(self) -> list[JMAPCalendar]:
+    def get_calendars(self) -> list[JMAPCalendar[Literal[False]]]:
         """Fetch all calendars for the authenticated account.
 
         Returns:

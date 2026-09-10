@@ -17,12 +17,19 @@ from __future__ import annotations
 import logging
 import uuid
 import warnings
+from typing import TYPE_CHECKING, Literal
 
 from calendaring_jmap._http import require_async_session
 
-## The async JMAP client is built on niquests' AsyncSession and has no
-## fallback - so this raises if niquests is absent.
-AsyncSession = require_async_session()
+if TYPE_CHECKING:
+    ## require_async_session() returns this same class at runtime, but as a
+    ## function call mypy can't treat it as a type; this import is only for
+    ## the annotations below.
+    from niquests import AsyncSession
+else:
+    ## The async JMAP client is built on niquests' AsyncSession and has no
+    ## fallback - so this raises if niquests is absent.
+    AsyncSession = require_async_session()
 
 from calendaring_jmap._methods.calendar import build_calendar_get
 from calendaring_jmap._methods.event import (
@@ -187,7 +194,7 @@ class AsyncJMAPClient(_JMAPClientBase):
 
         return method_responses
 
-    async def get_calendars(self) -> list[JMAPCalendar]:
+    async def get_calendars(self) -> list[JMAPCalendar[Literal[True]]]:
         """Fetch all calendars for the authenticated account.
 
         Returns:

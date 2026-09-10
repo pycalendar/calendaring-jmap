@@ -17,6 +17,7 @@ since broken data can cause the parse itself to fail.
 import datetime
 import logging
 import re
+from typing import overload
 
 log = logging.getLogger("calendaring_jmap")
 
@@ -25,6 +26,10 @@ log = logging.getLogger("calendaring_jmap")
 _fixup_warning_count = 0
 
 
+@overload
+def _to_normal_str(text: None) -> None: ...
+@overload
+def _to_normal_str(text: str | bytes) -> str: ...
 def _to_normal_str(text: str | bytes | None) -> str | None:
     """Decode bytes to str if needed, and normalize line endings to ``\\n``."""
     if text is None:
