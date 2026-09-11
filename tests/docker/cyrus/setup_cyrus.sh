@@ -45,14 +45,18 @@ done
 
 echo ""
 echo "Granting scheduling ACL rights to pre-provisioned users..."
-# Cyrus 3.13.x pre-creates user1's calendar home in the Docker image without
-# the extended scheduling rights (7=schedule-send-invite, 8=schedule-send-reply,
-# 9=schedule-send-freebusy).  Dynamically-created calendar homes (user2+) get
-# these rights automatically, so we only need to patch user1 here, but grant
-# to all known pre-created users for safety.
+# A user's #calendars mailboxes are created lazily on first access, so touch
+# each user's JMAP session before cyradm can set ACLs on their Outbox.
+for user in user1 user2 user3 user4 user5; do
+    curl -s -u "${user}:${TEST_PASSWORD}" -L "http://localhost:8802/.well-known/jmap" > /dev/null 2>&1
+done
+
+# cyradm lives inside the container, not on the host running this script.
+# MSYS2_ARG_CONV_EXCL stops Git Bash on Windows from mangling the container's
+# /usr/cyrus/... path into a host path; it's a no-op on Linux and macOS.
 for user in user1 user2 user3 user4 user5; do
     printf 'sam user.%s.#calendars.Outbox %s lrswipkxtecdan789\r\n' "$user" "$user"
-done | /usr/cyrus/bin/cyradm --auth PLAIN -u admin -w admin --notls --port 8143 localhost 2>/dev/null || \
+done | MSYS2_ARG_CONV_EXCL="*" docker exec -i "$CONTAINER_NAME" sh -c '/usr/cyrus/bin/cyradm --auth PLAIN -u admin -w admin --notls --port 8143 localhost' 2>/dev/null || \
     echo "Warning: could not set scheduling ACL rights (cyradm failed)"
 
 echo ""
