@@ -233,6 +233,7 @@ def event_created_id(request, server):
 class TestJMAPEventIntegration:
     def test_event_create_get(self, event_client, event_created_id):
         obj = event_client.get_event(event_created_id)
+        assert obj.id == event_created_id
         ical = jscal_to_ical(obj.get_data())
         assert "BEGIN:VCALENDAR" in ical
 

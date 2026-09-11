@@ -1701,6 +1701,18 @@ class TestIcalToJscal:
         assert result["timeZone"] == "America/New_York"
         assert "showWithoutTime" not in result
 
+    def test_prop_date_or_datetime_rejects_non_date_value(self):
+        from calendaring_jmap.convert.ical_to_jscal import _prop_date_or_datetime
+
+        with pytest.raises(ValueError, match="Expected a date or datetime property value"):
+            _prop_date_or_datetime(MagicMock(dt="not a date"))
+
+    def test_prop_timedelta_rejects_non_timedelta_value(self):
+        from calendaring_jmap.convert.ical_to_jscal import _prop_timedelta
+
+        with pytest.raises(ValueError, match="Expected a timedelta property value"):
+            _prop_timedelta(MagicMock(dt="not a timedelta"))
+
     def test_utc_event(self):
         ical = _make_ical("DTSTART:20240615T100000Z\r\nDURATION:PT30M\r\nSUMMARY:UTC Event\r\n")
         result = ical_to_jscal(ical)
