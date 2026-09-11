@@ -21,3 +21,4 @@ Calendar operations over JMAP (:rfc:`8620` + draft-ietf-jmap-calendars).
    api/async_client
    api/objects
    contribute
+   security
