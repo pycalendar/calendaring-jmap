@@ -18,7 +18,7 @@ Known risks and design notes
 Server-controlled API URL
 -------------------------
 
-:rfc:`8620` §2 has the client discover its API endpoint at runtime: a GET to ``/.well-known/jmap`` returns a Session object whose ``apiUrl`` field is where every subsequent request goes. This is how JMAP works, not something calendaring-jmap adds on top, and it means the session response controls where credentials get sent next.
+:rfc:`8620#section-2` has the client discover its API endpoint at runtime: a GET to ``/.well-known/jmap`` returns a Session object whose ``apiUrl`` field is where every subsequent request goes. This is how JMAP works, not something calendaring-jmap adds on top, and it means the session response controls where credentials get sent next.
 
 calendaring-jmap only corrects ``apiUrl`` when it names the same host as the session endpoint but a different port or scheme (some servers do this). A session response naming a genuinely different host is followed as-is. Combined with TLS, this is safe against a passive network observer; it does not protect against a session endpoint that is itself malicious or already compromised, since that is the entity the protocol asks you to trust. Only point the client at a session URL you control or trust, and use HTTPS for it.
 

@@ -10,5 +10,4 @@
 .. automodule:: calendaring_jmap.objects.calendar_object
    :members:
 
-.. automodule:: calendaring_jmap.error
-   :members:
+See :doc:`errors` for the exception hierarchy.

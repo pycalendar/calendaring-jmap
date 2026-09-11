@@ -4,6 +4,7 @@
 """Sphinx configuration for calendaring-jmap documentation."""
 
 import datetime
+import os
 
 project = "calendaring-jmap"
 this_year = datetime.date.today().year  # noqa: DTZ011
@@ -12,12 +13,18 @@ author = "calendaring-jmap contributors"
 
 # Extensions
 extensions = [
+    "notfound.extension",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
+    "sphinx_design",
+    "sphinx_issues",
 ]
+
+# sphinx_issues configuration: enables :issue:`N`, :pr:`N`, :user:`name` roles
+issues_github_path = "pycalendar/calendaring-jmap"
 
 # Theme configuration
 html_theme = "pydata_sphinx_theme"
@@ -28,20 +35,26 @@ html_theme_options = {
             "url": "https://github.com/pycalendar/calendaring-jmap",
             "icon": "fa-brands fa-square-github",
             "type": "fontawesome",
+            "attributes": {"target": "_blank", "rel": "noopener me"},
         },
         {
             "name": "PyPI",
             "url": "https://pypi.org/project/calendaring-jmap",
             "icon": "fa-custom fa-pypi",
             "type": "fontawesome",
+            "attributes": {"target": "_blank", "rel": "noopener me"},
         },
     ],
-    "footer_start": ["copyright"],
+    "footer_start": ["nlnet", "copyright"],
     "footer_end": ["theme-version", "sphinx-version"],
     "logo": {"text": "calendaring-jmap"},
     "use_edit_page_button": True,
     "show_toc_level": 2,
+    "navbar_align": "content",
+    "show_nav_level": 1,
     "navigation_with_keys": True,
+    "collapse_navigation": False,
+    "search_bar_text": "Search documentation",
 }
 
 html_context = {
@@ -52,6 +65,18 @@ html_context = {
 }
 
 templates_path = ["_templates"]
+html_static_path = ["_static"]
+# Custom fa-custom/fa-pypi icon used in icon_links above
+html_js_files = [("js/custom-icons.js", {"defer": "defer"})]
+
+# notfound.extension configuration
+notfound_template = "404.html"
+# Defaults to READTHEDOCS_CANONICAL_URL's path on RTD; outside RTD that env
+# var isn't set and the extension falls back to a hardcoded "/en/latest/",
+# which 404s every asset on a local build. Use root-relative paths instead
+# when not building on RTD.
+if not os.environ.get("READTHEDOCS"):
+    notfound_urls_prefix = "/"
 
 # Intersphinx mapping
 intersphinx_mapping = {

@@ -1,11 +1,14 @@
 .. SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
 .. SPDX-License-Identifier: AGPL-3.0-or-later
 
-================
-Incremental sync
-================
+==================
+Sync incrementally
+==================
 
-JMAP's state-based sync lets you fetch only what changed since the last call, without scanning the full calendar:
+JMAP's state-based sync lets you fetch only what changed since the last call, without scanning the full calendar. See :doc:`../explanation/design` for why this differs from CalDAV-style polling.
+
+Fetch a token, then the delta
+=============================
 
 .. code-block:: python
 
@@ -26,9 +29,13 @@ JMAP's state-based sync lets you fetch only what changed since the last call, wi
 
 ``added`` and ``modified`` are lists of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`. ``deleted`` is a list of event IDs: those objects no longer exist on the server, so their data cannot be fetched. The fourth element is the server's new sync token. Chaining straight from it avoids the race window a separate :meth:`~calendaring_jmap.client.JMAPClient.get_sync_token` round trip would open.
 
-:meth:`~calendaring_jmap.client.JMAPClient.get_objects_by_sync_token` raises :class:`~calendaring_jmap.error.JMAPMethodError` (``error_type="serverPartialFail"``) if the server truncated the change list (``hasMoreChanges: true``). If this happens, call :meth:`~calendaring_jmap.client.JMAPClient.get_sync_token` to establish a fresh baseline and re-sync from scratch.
+Handle a truncated change list
+==============================
 
-A typical pattern is to persist the token between runs:
+:meth:`~calendaring_jmap.client.JMAPClient.get_objects_by_sync_token` raises :class:`~calendaring_jmap.error.JMAPMethodError` (``error_type="serverPartialFail"``) if the server truncated the change list (``hasMoreChanges: true``). If this happens, call :meth:`~calendaring_jmap.client.JMAPClient.get_sync_token` to establish a fresh baseline and re-sync from scratch. See :doc:`errors` for other errors this can raise.
+
+Persist the token between runs
+==============================
 
 .. code-block:: python
 
