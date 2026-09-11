@@ -1,1 +1,0 @@
-Restructured the docs around the Diataxis framework (tutorial, how-to, reference, explanation), added a security policy and NLnet funding acknowledgment, and cleaned up release metadata ahead of 1.0.

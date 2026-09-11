@@ -111,7 +111,7 @@ testpaths = ["src/calendaring_jmap/tests"]
 [tool.towncrier]
 directory = "news/"
 filename = "CHANGES.rst"
-issue_format = "`Issue #{issue} <https://github.com/pycalendar/calendaring-jmap/issues/{issue}>`_"
+issue_format = "`#{issue} <https://github.com/pycalendar/calendaring-jmap/issues/{issue}>`_"
 start_string = ".. towncrier release notes start\n"
 title_format = "{version} ({project_date})"
 underlines = ["-", "~", "`"]
@@ -154,7 +154,7 @@ showcontent = true
 [[tool.towncrier.type]]
 directory = "chore"
 name = "Other tasks"
-showcontent = false
+showcontent = true
 
 [[tool.towncrier.type]]
 directory = "security"

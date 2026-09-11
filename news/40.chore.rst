@@ -1,1 +1,0 @@
-Maintenance: type checking, test coverage, Docker test fixtures, packaging fix, contributing docs on Read the Docs.
