@@ -172,10 +172,9 @@ for i in $(seq 1 $max_jmap_attempts); do
         break
     fi
     if [ $i -eq $max_jmap_attempts ]; then
-        echo "Warning: JMAP access test failed after ${max_jmap_attempts} attempts"
-        echo "Response: $RESPONSE"
-        echo "Continuing anyway..."
-        break
+        echo "Error: JMAP access test failed after ${max_jmap_attempts} attempts" >&2
+        echo "Response: $RESPONSE" >&2
+        exit 1
     fi
     echo -n "."
     sleep 2
