@@ -1,0 +1,21 @@
+<!--- SPDX-FileCopyrightText: 2026 calendaring-jmap contributors -->
+<!--- SPDX-License-Identifier: AGPL-3.0-or-later -->
+{% extends "!page.html" %}
+
+{%- block htmltitle %}
+<title>{{ title|striptags|e }}{%- for parent in parents %} – {{ parent.title }}{%- endfor %}{{ titlesuffix }}</title>
+{%- endblock %}
+
+{% block body %}
+<div>
+    <h1>Page not found</h1>
+    <p>We could not find the page you requested in the calendaring-jmap documentation.</p>
+    <p>You can <a href="search.html">search</a> the calendaring-jmap documentation.</p>
+    <h2>Why is this happening?</h2>
+    <p>
+        The link you followed may be outdated, or the page may have moved.
+        If you would like to report an issue or request a redirect be set up, you can <a href="https://github.com/pycalendar/calendaring-jmap/issues/new" rel="external">create a new issue in the GitHub issue tracker</a>.
+    </p>
+</div>
+
+{% endblock %}

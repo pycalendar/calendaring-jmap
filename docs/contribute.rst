@@ -36,6 +36,16 @@ Integration tests, against Cyrus IMAP and Stalwart via Docker:
     tests/docker/stalwart/start.sh
     pytest src/calendaring_jmap/tests/test_jmap_integration.py
 
+Previewing docs
+===============
+
+.. code-block:: bash
+
+    pip install -e ".[docs]"
+    sphinx-autobuild docs docs/_build/html
+
+Opens a local server that rebuilds and reloads the browser tab automatically as you edit files under ``docs/``.
+
 .. _artificial-intelligence-policy:
 
 Artificial intelligence policy
@@ -56,7 +66,7 @@ If your PR changes behavior, add a news fragment. CI-only and internal-refactor 
 
 Where ``<type>`` is one of: ``breaking``, ``removal``, ``feature``, ``bugfix``, ``documentation``, ``deps``, ``internal``, ``chore``, ``security``.
 
-Write a short, user-facing description of the change inside the file. Fragments are collected into ``CHANGES.rst`` at release time. Don't edit that file directly.
+Write a short, user-facing description of the change inside the file. Reference the issue it closes with the ``:issue:`` role, which links directly to it: :issue:`9` renders as a link to issue 9. Fragments are collected into ``CHANGES.rst`` at release time. Don't edit that file directly.
 
 If you used AI to help write the change, briefly disclose it in the fragment, per the :ref:`artificial-intelligence-policy`.
 

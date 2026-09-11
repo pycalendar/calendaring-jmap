@@ -1,9 +1,9 @@
 .. SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
 .. SPDX-License-Identifier: AGPL-3.0-or-later
 
-============
-Installation
-============
+=======
+Install
+=======
 
 .. code-block:: bash
 
@@ -13,6 +13,8 @@ Not yet published to PyPI.
 
 From source
 ===========
+
+To install from a clone, for example to test an unreleased change:
 
 .. code-block:: bash
 

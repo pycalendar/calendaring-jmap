@@ -5,6 +5,8 @@
 
 Calendar operations over JMAP (RFC 8620 + draft-ietf-jmap-calendars).
 
+Part of the [Python Calendaring Ecosystem](https://pycal.org).
+
 [![Documentation](https://readthedocs.org/projects/calendaring-jmap/badge/?version=stable)](https://calendaring-jmap.readthedocs.io/en/stable/)
 [![Tests](https://github.com/pycalendar/calendaring-jmap/actions/workflows/tests.yml/badge.svg)](https://github.com/pycalendar/calendaring-jmap/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/pycalendar/calendaring-jmap/branch/main/graph/badge.svg)](https://codecov.io/gh/pycalendar/calendaring-jmap)
@@ -35,7 +37,7 @@ with get_jmap_client(
         print(cal.name)
 ```
 
-See the [quickstart](https://calendaring-jmap.readthedocs.io/en/latest/usage/quickstart.html) for authentication options, error handling, and configuration from environment variables or a YAML file.
+See the [quickstart](https://calendaring-jmap.readthedocs.io/en/latest/tutorials/quickstart.html) for authentication options, error handling, and configuration from environment variables or a YAML file.
 
 ## Documentation
 
@@ -49,7 +51,14 @@ Full documentation: https://calendaring-jmap.readthedocs.io/
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See the [contributing guide](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html).
+
+## Funding
+
+This project is funded through [NGI0 Commons Fund](https://nlnet.nl/commonsfund), a fund established by [NLnet](https://nlnet.nl) with financial support from the European Commission's [Next Generation Internet](https://ngi.eu) program. Learn more at the [NLnet project page](https://nlnet.nl/project/Python-Webcalendaring).
+
+[<img src="https://nlnet.nl/logo/banner.png" alt="NLnet foundation logo" width="20%" />](https://nlnet.nl)
+[<img src="https://nlnet.nl/image/logos/NGI0_tag.svg" alt="NGI Zero Logo" width="20%" />](https://nlnet.nl/commonsfund)
 
 ## License
 

@@ -14,9 +14,11 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Sashank Bhamidi" }]
 dynamic = ["version"]
+keywords = ["calendar", "calendaring", "jmap", "rfc8620", "ical", "icalendar"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3.10",
@@ -49,12 +51,18 @@ dev = [
 docs = [
   "sphinx==9.1.0",
   "pydata-sphinx-theme==0.21.0",
+  "sphinx-autobuild==2025.8.25",
   "sphinx-copybutton==0.5.2",
+  "sphinx-design==0.7.0",
+  "sphinx-issues==6.0.0",
+  "sphinx-notfound-page==1.1.0",
 ]
 
 [project.urls]
 Repository = "https://github.com/pycalendar/calendaring-jmap"
 Issues = "https://github.com/pycalendar/calendaring-jmap/issues"
+Documentation = "https://calendaring-jmap.readthedocs.io/en/stable/"
+Changelog = "https://calendaring-jmap.readthedocs.io/en/stable/reference/changelog.html"
 
 [tool.hatch.version]
 source = "vcs"
