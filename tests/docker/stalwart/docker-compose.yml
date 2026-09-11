@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+services:
+  stalwart:
+    image: stalwartlabs/stalwart:v0.16.21
+    container_name: stalwart-test
+    hostname: localhost  # Stalwart uses hostname in JMAP session apiUrl; without this it advertises the container ID
+    ports:
+      - "8809:8080"
+    environment:
+      # v0.16.6+: STALWART_ADMIN_PASSWORD is ignored when no config exists (bootstrap mode).
+      # STALWART_RECOVERY_ADMIN pins a bootstrap credential so setup scripts can authenticate.
+      - STALWART_RECOVERY_ADMIN=admin:adminpass
+    volumes:
+      # config.json tells Stalwart where to store its database (avoids bootstrap mode).
+      - ./config/config.json:/etc/stalwart/config.json:ro
+    tmpfs:
+      - /opt/stalwart/data:size=500m
+      - /opt/stalwart/logs:size=50m
+    healthcheck:
+      # /admin/ requires a GitHub web-UI download that can be slow; the JMAP session
+      # endpoint redirects as soon as the database is initialised, so use that instead.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8080/.well-known/jmap"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 30s

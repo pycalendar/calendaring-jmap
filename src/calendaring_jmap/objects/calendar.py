@@ -10,15 +10,23 @@ Properties are defined in the JMAP Calendars specification.
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast, overload
 
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
 
 if TYPE_CHECKING:
     from calendaring_jmap.async_client import AsyncJMAPClient
     from calendaring_jmap.client import JMAPClient
+
+## Phantom type parameter distinguishing a sync-backed JMAPCalendar from an
+## async-backed one, so overloads below can key off self's type instead of
+## the runtime-only _is_async flag mypy can't see. No code ever constructs
+## JMAPCalendar[Literal[True]] or [Literal[False]] explicitly: get_calendars()
+## return types (client.py, async_client.py) pin it for callers instead.
+_M = TypeVar("_M", bound=bool)
 
 
 def _to_utcdate(dt: datetime) -> str:
@@ -33,7 +41,7 @@ def _to_utcdate(dt: datetime) -> str:
 
 
 @dataclass
-class JMAPCalendar:
+class JMAPCalendar(Generic[_M]):
     """A JMAP Calendar object.
 
     Attributes:
@@ -61,6 +69,30 @@ class JMAPCalendar:
         default=None, init=False, repr=False, compare=False
     )
     _is_async: bool = field(default=False, init=False, repr=False, compare=False)
+
+    @property
+    def _bound_client(self) -> JMAPClient | AsyncJMAPClient:
+        """The client this calendar was bound to by ``get_calendars()``.
+
+        A ``JMAPCalendar`` only ever reaches user code through
+        ``JMAPClient.get_calendars()`` or ``AsyncJMAPClient.get_calendars()``,
+        both of which set ``_client`` before returning it, so it is always
+        bound by the time any other method runs.
+        """
+        assert self._client is not None
+        return self._client
+
+    @property
+    def _bound_async_client(self: JMAPCalendar[Literal[True]]) -> AsyncJMAPClient:
+        """Same as :attr:`_bound_client`, narrowed for the ``_async_*`` helpers.
+
+        Only called from a method whose public overload already restricted
+        ``self`` to ``JMAPCalendar[Literal[True]]``, i.e. one that
+        ``AsyncJMAPClient.get_calendars()`` produced, so ``_client`` is always
+        an ``AsyncJMAPClient`` here.
+        """
+        assert self._is_async
+        return cast("AsyncJMAPClient", self._bound_client)
 
     @classmethod
     def from_jmap(cls, data: dict) -> JMAPCalendar:
@@ -99,7 +131,15 @@ class JMAPCalendar:
             d["color"] = self.color
         return d
 
-    def search(self, **searchargs):
+    @overload
+    def search(
+        self: JMAPCalendar[Literal[False]], **searchargs: Any
+    ) -> list[JMAPCalendarObject]: ...
+    @overload
+    def search(
+        self: JMAPCalendar[Literal[True]], **searchargs: Any
+    ) -> Coroutine[Any, Any, list[JMAPCalendarObject]]: ...
+    def search(self: Any, **searchargs: Any):
         """Search for calendar objects in this calendar.
 
         When called on an async-backed calendar, returns a coroutine that
@@ -126,7 +166,7 @@ class JMAPCalendar:
             start = _to_utcdate(start)
         if isinstance(end, datetime):
             end = _to_utcdate(end)
-        return self._client._search(
+        return self._bound_client._search(
             calendar_id=self.id,
             start=start,
             end=end,
@@ -134,14 +174,16 @@ class JMAPCalendar:
             parent=self,
         )
 
-    async def _async_search(self, **searchargs) -> list[JMAPCalendarObject]:
+    async def _async_search(
+        self: JMAPCalendar[Literal[True]], **searchargs: Any
+    ) -> list[JMAPCalendarObject]:
         start = searchargs.get("start")
         end = searchargs.get("end")
         if isinstance(start, datetime):
             start = _to_utcdate(start)
         if isinstance(end, datetime):
             end = _to_utcdate(end)
-        return await self._client._search(
+        return await self._bound_async_client._search(
             calendar_id=self.id,
             start=start,
             end=end,
@@ -149,7 +191,15 @@ class JMAPCalendar:
             parent=self,
         )
 
-    def get_object_by_uid(self, uid: str, comp_class=None):
+    @overload
+    def get_object_by_uid(
+        self: JMAPCalendar[Literal[False]], uid: str, comp_class: Any = None
+    ) -> JMAPCalendarObject: ...
+    @overload
+    def get_object_by_uid(
+        self: JMAPCalendar[Literal[True]], uid: str, comp_class: Any = None
+    ) -> Coroutine[Any, Any, JMAPCalendarObject]: ...
+    def get_object_by_uid(self: Any, uid: str, comp_class: Any = None):
         """Get a calendar object by its iCalendar UID.
 
         When called on an async-backed calendar, returns a coroutine that
@@ -169,12 +219,20 @@ class JMAPCalendar:
         """
         if self._is_async:
             return self._async_get_object_by_uid(uid)
-        return self._client._get_object_by_uid(uid, calendar_id=self.id, parent=self)
+        return self._bound_client._get_object_by_uid(uid, calendar_id=self.id, parent=self)
 
-    async def _async_get_object_by_uid(self, uid: str) -> JMAPCalendarObject:
-        return await self._client._get_object_by_uid(uid, calendar_id=self.id, parent=self)
+    async def _async_get_object_by_uid(
+        self: JMAPCalendar[Literal[True]], uid: str
+    ) -> JMAPCalendarObject:
+        return await self._bound_async_client._get_object_by_uid(
+            uid, calendar_id=self.id, parent=self
+        )
 
-    def add_event(self, ical_str: str) -> str:
+    @overload
+    def add_event(self: JMAPCalendar[Literal[False]], ical_str: str) -> str: ...
+    @overload
+    def add_event(self: JMAPCalendar[Literal[True]], ical_str: str) -> Coroutine[Any, Any, str]: ...
+    def add_event(self: Any, ical_str: str):
         """Add an event to this calendar from an iCalendar string.
 
         When called on an async-backed calendar, returns a coroutine that
@@ -194,7 +252,7 @@ class JMAPCalendar:
         """
         if self._is_async:
             return self._async_add_event(ical_str)
-        return self._client.create_event(self.id, ical_str)
+        return self._bound_client.create_event(self.id, ical_str)
 
-    async def _async_add_event(self, ical_str: str) -> str:
-        return await self._client.create_event(self.id, ical_str)
+    async def _async_add_event(self: JMAPCalendar[Literal[True]], ical_str: str) -> str:
+        return await self._bound_async_client.create_event(self.id, ical_str)

@@ -51,6 +51,31 @@ _CUTYPE_MAP = {
 _BYDAY_ABBR = {"SU", "MO", "TU", "WE", "TH", "FR", "SA"}
 
 
+def _prop_date_or_datetime(prop) -> datetime | date:
+    """Return a vDDDTypes property's ``.dt``, narrowed to ``date | datetime``.
+
+    ``Component.__getitem__`` is typed as a large union of every possible
+    property value class, most of which have no ``.dt`` attribute at all;
+    ``getattr`` sidesteps that fan-out, and the isinstance check narrows the
+    result for callers that need a concrete date/datetime to operate on.
+    """
+    dt = getattr(prop, "dt", None)
+    if not isinstance(dt, (datetime, date)):
+        raise ValueError(f"Expected a date or datetime property value, got {dt!r}")
+    return dt
+
+
+def _prop_timedelta(prop) -> timedelta:
+    """Return a vDDDTypes property's ``.dt``, narrowed to ``timedelta``.
+
+    See :func:`_prop_date_or_datetime` for why ``getattr`` is used here.
+    """
+    dt = getattr(prop, "dt", None)
+    if not isinstance(dt, timedelta):
+        raise ValueError(f"Expected a timedelta property value, got {dt!r}")
+    return dt
+
+
 def _dtstart_to_jscal(dtstart_prop) -> tuple[str, str | None, bool]:
     """Extract JSCalendar start, timeZone, showWithoutTime from a DTSTART property.
 
@@ -343,15 +368,19 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
     event_tzinfo = getattr(getattr(dtstart_prop, "dt", None), "tzinfo", None)
 
     overrides_by_recurrence_id: dict[str, icalendar.Event] = {
-        _format_local_dt(component["RECURRENCE-ID"].dt, event_tzinfo): component
+        _format_local_dt(
+            _prop_date_or_datetime(component["RECURRENCE-ID"]), event_tzinfo
+        ): component
         for component in override_components
     }
 
+    dtend_prop = master.get("DTEND")
     if master.get("DURATION"):
-        duration = _timedelta_to_duration(master["DURATION"].dt)
-    elif master.get("DTEND"):
-        delta = master["DTEND"].dt - dtstart_prop.dt
-        duration = _timedelta_to_duration(delta)
+        duration = _timedelta_to_duration(_prop_timedelta(master["DURATION"]))
+    elif dtend_prop is not None:
+        duration = _timedelta_to_duration(
+            _prop_date_or_datetime(dtend_prop) - _prop_date_or_datetime(dtstart_prop)
+        )
     else:
         duration = "P0D"
 

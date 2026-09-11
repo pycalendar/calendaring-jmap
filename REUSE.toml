@@ -17,10 +17,32 @@ precedence = "override"
 SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
 
+# PEP 561 marker file, must be empty
+[[annotations]]
+path = "src/calendaring_jmap/py.typed"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
 # Towncrier news fragments. short-lived, deleted once folded into
 # CHANGES.rst at release time. Not worth a header each.
 [[annotations]]
 path = "news/*"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# JSON, no comment syntax available
+[[annotations]]
+path = "tests/docker/stalwart/config/config.json"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# GitHub issue form templates: YAML frontmatter must stay the first thing
+# in the file for GitHub to parse it, so a leading comment isn't an option.
+[[annotations]]
+path = ".github/ISSUE_TEMPLATE/*.md"
 precedence = "override"
 SPDX-FileCopyrightText = "2026 calendaring-jmap contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"

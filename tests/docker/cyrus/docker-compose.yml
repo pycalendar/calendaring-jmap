@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+services:
+  cyrus:
+    # No versioned release tags exist for this image, only latest/bookworm/master
+    # (all identical, rebuilt from current Cyrus master). Pinned to a digest
+    # instead of :latest so the JSCalendar/JMAP behavior this repo tests against
+    # doesn't drift out from under it; bump deliberately when needed.
+    image: ghcr.io/cyrusimap/cyrus-docker-test-server@sha256:a3c8a451bde22f46a8b06fb6b335370c0ab23960950b84874aed972b64af3997
+    container_name: cyrus-test
+    ports:
+      - "8802:8080"  # HTTP (JMAP)
+      - "8143:8143"  # IMAP
+      - "18001:8001"  # Management API
+    environment:
+      - DEFAULTDOMAIN=example.com
+      - SERVERNAME=cyrus-test
+    volumes:
+      # Override the imapd.conf template to set virtdomains: off.
+      # This fixes iTIP scheduling delivery: with virtdomains: userid the
+      # caladdress_lookup() function preserves user2@example.com as the
+      # userid, but mailbox ACLs use the short form user2, causing 403.
+      - ./imapd.conf:/srv/testserver/imapd.conf:ro
+    # No volumes: each start is a fresh instance with newly created users.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

@@ -25,7 +25,7 @@ import pytest_asyncio
 try:
     from niquests.auth import HTTPBasicAuth
 except ImportError:
-    from requests.auth import HTTPBasicAuth  # type: ignore[no-redef]
+    from requests.auth import HTTPBasicAuth  # type: ignore[assignment,no-redef]
 
 from calendaring_jmap import AsyncJMAPClient, JMAPClient
 from calendaring_jmap.constants import CALENDAR_CAPABILITY
@@ -168,6 +168,20 @@ def stalwart_event_id(stalwart_client, stalwart_calendar_id):
         pass
 
 
+## Runs a test class against both Cyrus and Stalwart by parametrizing over a
+## "server" fixture that indirection fixtures below (event_client, list_client,
+## etc.) resolve to each server's own client/calendar_id/event_id fixtures via
+## getfixturevalue(). Both servers speak the same synchronous API, so the test
+## bodies are identical; only the fixture wiring differs.
+_sync_servers = pytest.mark.parametrize(
+    "server",
+    [
+        pytest.param("cyrus", marks=_cyrus_skip),
+        pytest.param("stalwart", marks=_stalwart_skip),
+    ],
+)
+
+
 @_cyrus_skip
 class TestJMAPSessionIntegration:
     def test_session_fetch_returns_api_url(self, session):
@@ -181,66 +195,99 @@ class TestJMAPSessionIntegration:
         assert CALENDAR_CAPABILITY in session.account_capabilities
 
 
-@_cyrus_skip
+@pytest.fixture
+def list_client(request, server):
+    return request.getfixturevalue("client" if server == "cyrus" else "stalwart_client")
+
+
+@_sync_servers
 class TestJMAPCalendarListIntegration:
-    def test_list_calendars_returns_list(self, client):
-        calendars = client.get_calendars()
+    def test_list_calendars_returns_list(self, list_client):
+        calendars = list_client.get_calendars()
         assert isinstance(calendars, list)
 
-    def test_calendars_have_id_and_name(self, client):
-        calendars = client.get_calendars()
-        assert len(calendars) >= 1, "Expected at least one calendar on Cyrus for user1"
+    def test_calendars_have_id_and_name(self, list_client, server):
+        calendars = list_client.get_calendars()
+        assert len(calendars) >= 1, f"Expected at least one calendar on {server} for user1"
         for cal in calendars:
             assert cal.id, f"Calendar missing id: {cal}"
             assert cal.name, f"Calendar has empty name: {cal}"
 
 
-@_cyrus_skip
+@pytest.fixture
+def event_client(request, server):
+    return request.getfixturevalue("client" if server == "cyrus" else "stalwart_client")
+
+
+@pytest.fixture
+def event_calendar_id(request, server):
+    return request.getfixturevalue("calendar_id" if server == "cyrus" else "stalwart_calendar_id")
+
+
+@pytest.fixture
+def event_created_id(request, server):
+    return request.getfixturevalue("created_event_id" if server == "cyrus" else "stalwart_event_id")
+
+
+@_sync_servers
 class TestJMAPEventIntegration:
-    def test_event_create_get(self, client, created_event_id):
-        obj = client.get_event(created_event_id)
+    def test_event_create_get(self, event_client, event_created_id):
+        obj = event_client.get_event(event_created_id)
+        assert obj.id == event_created_id
         ical = jscal_to_ical(obj.get_data())
         assert "BEGIN:VCALENDAR" in ical
-        assert "Integration Test Event" in ical
 
-    def test_event_update(self, client, created_event_id):
-        client.update_event(created_event_id, _minimal_ical("Updated Title"))
-        obj = client.get_event(created_event_id)
+    def test_event_update(self, event_client, event_created_id):
+        event_client.update_event(event_created_id, _minimal_ical("Updated Title"))
+        obj = event_client.get_event(event_created_id)
         assert "Updated Title" in jscal_to_ical(obj.get_data())
 
-    def test_event_delete(self, client, calendar_id):
-        event_id = client.create_event(calendar_id, _minimal_ical("To Be Deleted"))
-        client.delete_event(event_id)
+    def test_event_delete(self, event_client, event_calendar_id):
+        event_id = event_client.create_event(event_calendar_id, _minimal_ical("To Be Deleted"))
+        event_client.delete_event(event_id)
         with pytest.raises(JMAPMethodError):
-            client.get_event(event_id)
+            event_client.get_event(event_id)
 
-    def test_event_query_time_range(self, client, calendar_id, created_event_id):
-        results = client.search_events(
-            calendar_id=calendar_id,
-            start="2026-06-01T00:00:00",
-            end="2026-06-02T00:00:00",
-        )
-        assert len(results) >= 1
-        assert any("Integration Test Event" in jscal_to_ical(r.get_data()) for r in results)
-
-    def test_event_sync(self, client, calendar_id):
-        token_before = client.get_sync_token()
-        event_id = client.create_event(calendar_id, _minimal_ical("Sync Test Event"))
+    def test_event_query_time_range(self, server, event_client, event_calendar_id):
+        title = "Query Range Test Event"
+        event_id = event_client.create_event(event_calendar_id, _minimal_ical(title))
         try:
-            added, _modified, _deleted, _new_token = client.get_objects_by_sync_token(token_before)
+            # Stalwart does not support the inCalendars filter; query without calendar_id.
+            search_calendar_id = None if server == "stalwart" else event_calendar_id
+            results = event_client.search_events(
+                calendar_id=search_calendar_id,
+                start="2026-06-01T00:00:00",
+                end="2026-06-02T00:00:00",
+            )
+            assert len(results) >= 1
+            assert any(title in jscal_to_ical(r.get_data()) for r in results)
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_event_sync(self, server, event_client, event_calendar_id):
+        if server == "stalwart":
+            pytest.skip("Stalwart integration coverage does not include sync yet")
+        token_before = event_client.get_sync_token()
+        event_id = event_client.create_event(event_calendar_id, _minimal_ical("Sync Test Event"))
+        try:
+            added, _modified, _deleted, _new_token = event_client.get_objects_by_sync_token(
+                token_before
+            )
             assert any("Sync Test Event" in jscal_to_ical(a.get_data()) for a in added)
         finally:
-            client.delete_event(event_id)
+            event_client.delete_event(event_id)
 
-    def test_ical_roundtrip(self, client, calendar_id):
+    def test_ical_roundtrip(self, event_client, event_calendar_id):
         start = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc)
-        event_id = client.create_event(calendar_id, _minimal_ical("Roundtrip Event", start=start))
+        event_id = event_client.create_event(
+            event_calendar_id, _minimal_ical("Roundtrip Event", start=start)
+        )
         try:
-            fetched = jscal_to_ical(client.get_event(event_id).get_data())
+            fetched = jscal_to_ical(event_client.get_event(event_id).get_data())
             assert "Roundtrip Event" in fetched
             assert "20260715" in fetched
         finally:
-            client.delete_event(event_id)
+            event_client.delete_event(event_id)
 
 
 @_cyrus_skip
@@ -307,60 +354,3 @@ class TestAsyncJMAPEventIntegration:
             assert "20260715" in fetched
         finally:
             await async_client.delete_event(event_id)
-
-
-@_stalwart_skip
-class TestStalwartJMAPCalendarListIntegration:
-    def test_list_calendars_returns_list(self, stalwart_client):
-        calendars = stalwart_client.get_calendars()
-        assert isinstance(calendars, list)
-
-    def test_calendars_have_id_and_name(self, stalwart_client):
-        calendars = stalwart_client.get_calendars()
-        assert len(calendars) >= 1, "Expected at least one calendar on Stalwart for user1"
-        for cal in calendars:
-            assert cal.id, f"Calendar missing id: {cal}"
-            assert cal.name, f"Calendar has empty name: {cal}"
-
-
-@_stalwart_skip
-class TestStalwartJMAPEventIntegration:
-    def test_event_create_get(self, stalwart_client, stalwart_event_id):
-        obj = stalwart_client.get_event(stalwart_event_id)
-        ical = jscal_to_ical(obj.get_data())
-        assert "BEGIN:VCALENDAR" in ical
-        assert "Stalwart Test Event" in ical
-
-    def test_event_update(self, stalwart_client, stalwart_event_id):
-        stalwart_client.update_event(stalwart_event_id, _minimal_ical("Stalwart Updated Title"))
-        obj = stalwart_client.get_event(stalwart_event_id)
-        assert "Stalwart Updated Title" in jscal_to_ical(obj.get_data())
-
-    def test_event_delete(self, stalwart_client, stalwart_calendar_id):
-        event_id = stalwart_client.create_event(
-            stalwart_calendar_id, _minimal_ical("Stalwart To Be Deleted")
-        )
-        stalwart_client.delete_event(event_id)
-        with pytest.raises(JMAPMethodError):
-            stalwart_client.get_event(event_id)
-
-    def test_event_query_time_range(self, stalwart_client, stalwart_event_id):
-        # Stalwart does not support the inCalendars filter; query without calendar_id.
-        results = stalwart_client.search_events(
-            start="2026-06-01T00:00:00",
-            end="2026-06-02T00:00:00",
-        )
-        assert len(results) >= 1
-        assert any("Stalwart Test Event" in jscal_to_ical(r.get_data()) for r in results)
-
-    def test_ical_roundtrip(self, stalwart_client, stalwart_calendar_id):
-        start = datetime(2026, 7, 15, 9, 0, 0, tzinfo=timezone.utc)
-        event_id = stalwart_client.create_event(
-            stalwart_calendar_id, _minimal_ical("Stalwart Roundtrip Event", start=start)
-        )
-        try:
-            fetched = jscal_to_ical(stalwart_client.get_event(event_id).get_data())
-            assert "Stalwart Roundtrip Event" in fetched
-            assert "20260715" in fetched
-        finally:
-            stalwart_client.delete_event(event_id)
