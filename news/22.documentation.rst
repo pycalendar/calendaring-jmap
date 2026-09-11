@@ -1,0 +1,1 @@
+Added a security policy: how to report a vulnerability, and known risks specific to JMAP session discovery, credential handling, and untrusted calendar data.
