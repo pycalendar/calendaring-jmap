@@ -29,7 +29,7 @@ Choose the appropriate form:
 -->
 
 - Closes #ISSUE_NUMBER
-- Contributes to #ISSUE_NUMBER
+<!-- Change "Closes" to "Contributes to" above for a partial contribution. -->
 
 <!--
 You may also link to open pull requests that address the same issue, if applicable.
