@@ -1,0 +1,1 @@
+``JMAPError`` and its subclasses now subclass ``caldav.lib.error.DAVError`` if ``caldav`` is installed. Code catching ``DAVError`` around CalDAV calls will also catch JMAP errors. There is still no hard dependency on ``caldav``; without it, the error classes stay plain ``Exception`` subclasses.

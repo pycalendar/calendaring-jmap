@@ -4,12 +4,29 @@
 """JMAP error hierarchy.
 
 RFC 8620 §3.6.2 defines the standard method-level error types.
+
+If ``caldav`` happens to be installed alongside this package, JMAPError and
+JMAPAuthError subclass its DAVError/AuthorizationError too, so code that
+catches ``caldav.lib.error.DAVError`` around CalDAV calls also catches JMAP
+errors raised here. There is no hard dependency on caldav, just an optional
+compatibility hook when it's present.
 """
 
 from __future__ import annotations
 
+try:
+    from caldav.lib.error import AuthorizationError as _CaldavAuthorizationError
+    from caldav.lib.error import DAVError as _CaldavDAVError
+except ImportError:
 
-class JMAPBaseError(Exception):
+    class _CaldavDAVError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class _CaldavAuthorizationError(_CaldavDAVError):  # type: ignore[no-redef]
+        pass
+
+
+class JMAPBaseError(_CaldavDAVError):
     """Base for all calendaring-jmap errors: a URL, a reason, nothing more."""
 
     url: str | None = None
@@ -62,7 +79,7 @@ class JMAPCapabilityError(JMAPError):
     reason = "Server does not support urn:ietf:params:jmap:calendars"
 
 
-class JMAPAuthError(JMAPError):
+class JMAPAuthError(_CaldavAuthorizationError, JMAPError):
     """HTTP 401 or 403 received from a JMAP server.
 
     Unlike CalDAV, JMAP does not use a 401-challenge-retry dance.
