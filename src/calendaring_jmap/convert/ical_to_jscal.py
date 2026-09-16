@@ -17,6 +17,7 @@ import uuid
 from datetime import date, datetime, timedelta
 
 import icalendar
+from icalendar.timezone.tzid import tzid_from_dt
 
 from calendaring_jmap.convert._fixup import fixup
 from calendaring_jmap.convert._utils import _format_local_dt, _timedelta_to_duration
@@ -93,10 +94,10 @@ def _dtstart_to_jscal(dtstart_prop) -> tuple[str, str | None, bool]:
         return dt.strftime("%Y-%m-%dT%H:%M:%S"), "Etc/UTC", False
 
     if dt.tzinfo is not None:
-        # Timezone-aware — prefer the TZID parameter (IANA name) over tzinfo repr
-        # NOTE: non-IANA TZIDs (e.g. "Eastern Standard Time" from Outlook)
-        # are passed through unchanged; mapping to IANA is out of scope.
-        tz_str = dtstart_prop.params.get("TZID")
+        # Timezone-aware. RFC 8984 requires an IANA name; a raw TZID param
+        # can be a Windows or vendor-prefixed name instead, so resolve via
+        # tzid_from_dt() rather than using the param string directly.
+        tz_str = tzid_from_dt(dt)
         return dt.strftime("%Y-%m-%dT%H:%M:%S"), tz_str, False
 
     # Floating (no timezone)
