@@ -1,0 +1,1 @@
+``ical_to_jscal`` now normalizes non-IANA ``TZID`` values (Windows timezone names, vendor-prefixed globally-unique TZIDs) to IANA names in ``timeZone``, as RFC 8984 requires, instead of passing them through unchanged.

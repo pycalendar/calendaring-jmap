@@ -1701,6 +1701,45 @@ class TestIcalToJscal:
         assert result["timeZone"] == "America/New_York"
         assert "showWithoutTime" not in result
 
+    def test_windows_tzid_is_normalized_to_iana(self):
+        """Outlook emits Windows timezone names; RFC 8984 requires an IANA
+        name in timeZone, so the raw TZID param must be resolved, not
+        passed through."""
+        ical = _make_ical(
+            "DTSTART;TZID=Eastern Standard Time:20240615T100000\r\n"
+            "DURATION:PT1H\r\nSUMMARY:Windows TZ Event\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert result["timeZone"] == "America/New_York"
+
+    def test_globally_unique_tzid_is_normalized_to_iana(self):
+        """Evolution/Mozilla Lightning-style vendor-prefixed TZIDs (RFC 5545
+        §3.2.19) must resolve to their IANA suffix."""
+        ical = _make_ical(
+            "DTSTART;TZID=/freeassociation.sourceforge.net/Europe/Berlin:20240615T100000\r\n"
+            "DURATION:PT1H\r\nSUMMARY:Globally Unique TZID Event\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert result["timeZone"] == "Europe/Berlin"
+
+    def test_custom_vtimezone_tzid_passes_through(self):
+        """A TZID naming the event's own embedded VTIMEZONE (not a known
+        IANA/Windows name) isn't something tzid_from_dt can normalize
+        further, so it passes through unchanged."""
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VTIMEZONE\r\nTZID:Custom/MyOffice\r\n"
+            "BEGIN:STANDARD\r\nDTSTART:19701101T020000\r\n"
+            "TZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nEND:STANDARD\r\n"
+            "END:VTIMEZONE\r\n"
+            "BEGIN:VEVENT\r\nUID:custom-tz@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART;TZID=Custom/MyOffice:20240615T100000\r\n"
+            "DURATION:PT1H\r\nSUMMARY:Custom VTIMEZONE Event\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert result["timeZone"] == "Custom/MyOffice"
+
     def test_prop_date_or_datetime_rejects_non_date_value(self):
         from calendaring_jmap.convert.ical_to_jscal import _prop_date_or_datetime
 
