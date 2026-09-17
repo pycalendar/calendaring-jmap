@@ -1,0 +1,1 @@
+``search_events`` and ``Calendar.search`` now filter with ``inCalendar`` (a single calendar id), matching the current JMAP Calendars spec, instead of the non-existent ``inCalendars`` (a list). Calendar-scoped search previously failed against spec-compliant servers.

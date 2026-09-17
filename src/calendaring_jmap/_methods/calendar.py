@@ -14,6 +14,7 @@ properties are defined in the JMAP Calendars specification.
 
 from __future__ import annotations
 
+from calendaring_jmap._methods import parse_set_response
 from calendaring_jmap.objects.calendar import JMAPCalendar
 
 
@@ -69,3 +70,76 @@ def build_calendar_changes(account_id: str, since_state: str) -> tuple:
         {"accountId": account_id, "sinceState": since_state},
         "cal-changes-0",
     )
+
+
+def build_calendar_set_create(account_id: str, calendars: dict[str, dict]) -> tuple:
+    """Build a ``Calendar/set`` method call for creating calendars.
+
+    Args:
+        account_id: The JMAP accountId.
+        calendars: Map of client-assigned creation ID to Calendar JSON dict.
+
+    Returns:
+        A 3-tuple ``("Calendar/set", arguments_dict, call_id)``.
+    """
+    return (
+        "Calendar/set",
+        {"accountId": account_id, "create": dict(calendars)},
+        "cal-set-create-0",
+    )
+
+
+def build_calendar_set_update(account_id: str, updates: dict[str, dict]) -> tuple:
+    """Build a ``Calendar/set`` method call for updating calendars.
+
+    Args:
+        account_id: The JMAP accountId.
+        updates: Map of calendar ID to partial patch dict.
+
+    Returns:
+        A 3-tuple ``("Calendar/set", arguments_dict, call_id)``.
+    """
+    return (
+        "Calendar/set",
+        {"accountId": account_id, "update": updates},
+        "cal-set-update-0",
+    )
+
+
+def build_calendar_set_destroy(
+    account_id: str,
+    ids: list[str],
+    on_destroy_remove_events: bool = False,
+) -> tuple:
+    """Build a ``Calendar/set`` method call for destroying calendars.
+
+    Args:
+        account_id: The JMAP accountId.
+        ids: List of calendar IDs to destroy.
+        on_destroy_remove_events: If ``False`` (the spec default), destroying
+            a calendar that still has events fails with a ``calendarHasEvent``
+            SetError. If ``True``, the events are removed along with it.
+
+    Returns:
+        A 3-tuple ``("Calendar/set", arguments_dict, call_id)``.
+    """
+    return (
+        "Calendar/set",
+        {
+            "accountId": account_id,
+            "destroy": ids,
+            "onDestroyRemoveEvents": on_destroy_remove_events,
+        },
+        "cal-set-destroy-0",
+    )
+
+
+def parse_calendar_set(
+    response_args: dict,
+) -> tuple[dict, dict, list[str], dict, dict, dict]:
+    """Parse the arguments dict from a ``Calendar/set`` method response.
+
+    Returns a 6-tuple ``(created, updated, destroyed, not_created, not_updated, not_destroyed)``.
+    See :func:`calendaring_jmap._methods.parse_set_response` for field semantics.
+    """
+    return parse_set_response(response_args)

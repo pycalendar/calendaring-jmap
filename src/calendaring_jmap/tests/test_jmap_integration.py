@@ -38,11 +38,17 @@ CYRUS_PORT = 8802
 CYRUS_JMAP_URL = f"http://{CYRUS_HOST}:{CYRUS_PORT}/.well-known/jmap"
 CYRUS_USERNAME = "user1"
 CYRUS_PASSWORD = "x"
+CYRUS_USERNAME_2 = "user2"
+CYRUS_PASSWORD_2 = "x"
 
 STALWART_HOST = "localhost"
 STALWART_PORT = 8809
 STALWART_JMAP_URL = f"http://{STALWART_HOST}:{STALWART_PORT}/.well-known/jmap"
 STALWART_USERNAME = "testuser@example.org"
+# user1@example.org (separate from STALWART_USERNAME above) is provisioned by
+# setup_stalwart.sh specifically for multi-account tests like sharing.
+STALWART_USERNAME_2 = "user1@example.org"
+STALWART_PASSWORD_2 = "caldavtest1"
 STALWART_PASSWORD = "testcaldav"
 
 
@@ -214,6 +220,243 @@ class TestJMAPCalendarListIntegration:
             assert cal.name, f"Calendar has empty name: {cal}"
 
 
+@pytest.fixture(scope="module")
+def second_client():
+    return JMAPClient(url=CYRUS_JMAP_URL, username=CYRUS_USERNAME_2, password=CYRUS_PASSWORD_2)
+
+
+@pytest.fixture(scope="module")
+def stalwart_second_client():
+    return JMAPClient(
+        url=STALWART_JMAP_URL, username=STALWART_USERNAME_2, password=STALWART_PASSWORD_2
+    )
+
+
+@pytest.fixture
+def calendar_management_client(request, server):
+    return request.getfixturevalue("client" if server == "cyrus" else "stalwart_client")
+
+
+@pytest.fixture
+def second_account_client(request, server):
+    return request.getfixturevalue(
+        "second_client" if server == "cyrus" else "stalwart_second_client"
+    )
+
+
+@pytest.fixture
+def second_account_id(server):
+    """The account id a second user's own session resolves for itself.
+
+    share_calendar() needs a resolved Principal/account id and this client
+    has no Principal/query support yet, so the test resolves it the same way
+    a caller without Principal support would have to: open a session as the
+    target user and read what account id they see for themselves.
+    """
+    if server == "cyrus":
+        session = fetch_session(
+            CYRUS_JMAP_URL, auth=HTTPBasicAuth(CYRUS_USERNAME_2, CYRUS_PASSWORD_2)
+        )
+    else:
+        session = fetch_session(
+            STALWART_JMAP_URL, auth=HTTPBasicAuth(STALWART_USERNAME_2, STALWART_PASSWORD_2)
+        )
+    return session.account_id
+
+
+@pytest.fixture
+def owner_account_id(server):
+    """The account id calendar_management_client's own session resolves for itself.
+
+    Used to browse the owner's account from the sharee's client after a
+    share_calendar() call, since JMAP surfaces a shared calendar under the
+    owner's accountId, not the sharee's own primary account.
+    """
+    if server == "cyrus":
+        session = fetch_session(CYRUS_JMAP_URL, auth=HTTPBasicAuth(CYRUS_USERNAME, CYRUS_PASSWORD))
+    else:
+        session = fetch_session(
+            STALWART_JMAP_URL, auth=HTTPBasicAuth(STALWART_USERNAME, STALWART_PASSWORD)
+        )
+    return session.account_id
+
+
+@_sync_servers
+class TestJMAPCalendarManagementIntegration:
+    def test_create_update_delete_calendar(self, calendar_management_client):
+        cal_id = calendar_management_client.create_calendar("Integration Test Calendar")
+        assert cal_id
+
+        calendar_management_client.update_calendar(cal_id, name="Renamed Calendar")
+        calendars = calendar_management_client.get_calendars()
+        renamed = next((c for c in calendars if c.id == cal_id), None)
+        assert renamed is not None
+        assert renamed.name == "Renamed Calendar"
+
+        calendar_management_client.delete_calendar(cal_id)
+        calendars = calendar_management_client.get_calendars()
+        assert not any(c.id == cal_id for c in calendars)
+
+    def test_delete_calendar_with_event_raises_calendar_has_event(self, calendar_management_client):
+        cal_id = calendar_management_client.create_calendar("Calendar With Event")
+        calendar_management_client.create_event(cal_id, _minimal_ical("Blocking Event"))
+        try:
+            with pytest.raises(JMAPMethodError) as exc_info:
+                calendar_management_client.delete_calendar(cal_id)
+            # JMAP Calendars draft-29 §10.7.1 defines this as "calendarHasEvent"
+            # (singular). Cyrus sends "calendarHasEvents" (plural) instead; both
+            # are accepted here since this is a server spelling quirk, not
+            # something the client controls.
+            assert exc_info.value.error_type in ("calendarHasEvent", "calendarHasEvents")
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_delete_calendar_with_event_and_on_destroy_remove_events(
+        self, calendar_management_client
+    ):
+        cal_id = calendar_management_client.create_calendar("Calendar With Event To Remove")
+        calendar_management_client.create_event(cal_id, _minimal_ical("Removable Event"))
+        calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+        calendars = calendar_management_client.get_calendars()
+        assert not any(c.id == cal_id for c in calendars)
+
+    def test_get_calendar_subscriptions_returns_own_calendars(self, calendar_management_client):
+        # The client's own calendars are subscribed by default.
+        subs = calendar_management_client.get_calendar_subscriptions()
+        all_calendars = calendar_management_client.get_calendars()
+        assert {c.id for c in subs} <= {c.id for c in all_calendars}
+        assert all(c.is_subscribed for c in subs)
+
+    def test_set_default_alerts(self, calendar_management_client):
+        cal_id = calendar_management_client.create_calendar("Calendar With Default Alerts")
+        try:
+            alert = {
+                "@type": "Alert",
+                "trigger": {"@type": "OffsetTrigger", "offset": "-PT10M"},
+            }
+            calendar_management_client.set_default_alerts(cal_id, alerts_with_time={"a1": alert})
+            calendars = calendar_management_client.get_calendars()
+            updated = next((c for c in calendars if c.id == cal_id), None)
+            assert updated is not None
+            assert updated.default_alerts_with_time
+        finally:
+            calendar_management_client.delete_calendar(cal_id)
+
+    def test_share_calendar_grants_visible_to_second_account(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        server,
+    ):
+        """A shared calendar lives under the owner's accountId, not the
+        sharee's own primary account (JMAP's multi-account model, RFC 8620
+        §2). The sharee's session gains access to the owner's account, so
+        they browse it with get_calendars(account_id=owner_account_id)
+        rather than their own default get_calendars()."""
+        cal_id = calendar_management_client.create_calendar("Shared Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(
+                cal_id, second_account_id, {"mayReadItems": True}
+            )
+            owner_calendars = calendar_management_client.get_calendars()
+            shared_on_owner_side = next((c for c in owner_calendars if c.id == cal_id), None)
+            assert shared_on_owner_side is not None
+            assert shared_on_owner_side.share_with is not None
+            assert (
+                shared_on_owner_side.share_with.get(second_account_id, {}).get("mayReadItems")
+                is True
+            )
+
+            second_view = second_account_client.get_calendars(account_id=owner_account_id)
+            shared = next((c for c in second_view if c.id == cal_id), None)
+            assert shared is not None, (
+                f"{server}: calendar shared with account id {second_account_id!r} was not "
+                f"visible to the second account browsing owner account {owner_account_id!r}."
+            )
+            assert shared.my_rights.get("mayReadItems") is True
+        finally:
+            calendar_management_client.delete_calendar(cal_id)
+
+    def test_add_event_to_shared_calendar_targets_owner_account(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        server,
+    ):
+        """get_calendars(account_id=...) binds the requested account onto the
+        returned JMAPCalendar, so add_event() on that object creates the
+        event under the owner's account rather than the sharee's own. This
+        is the fix for a gap where a calendar fetched from someone else's
+        account silently routed writes back to the caller's own account."""
+        cal_id = calendar_management_client.create_calendar("Write Shared Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(
+                cal_id, second_account_id, {"mayReadItems": True, "mayWriteAll": True}
+            )
+            second_view = second_account_client.get_calendars(account_id=owner_account_id)
+            shared = next((c for c in second_view if c.id == cal_id), None)
+            assert shared is not None, (
+                f"{server}: calendar not visible to second account for write test."
+            )
+
+            event_id = shared.add_event(_minimal_ical("Written By Sharee"))
+            assert event_id
+
+            owner_events = calendar_management_client.search_events(calendar_id=cal_id)
+            assert any(obj.id == event_id for obj in owner_events), (
+                f"{server}: event created via the shared calendar object was not visible "
+                f"in the owner's own account; add_event() likely targeted the wrong account."
+            )
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_edit_and_delete_event_on_shared_calendar_targets_owner_account(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        server,
+    ):
+        """save() and delete_event() must route through the calendar's owning
+        account too, the same way add_event() does. Both take the object's
+        parent._account_id, not the sharee's own session account."""
+        cal_id = calendar_management_client.create_calendar("Edit Shared Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(
+                cal_id, second_account_id, {"mayReadItems": True, "mayWriteAll": True}
+            )
+            event_id = calendar_management_client.create_event(
+                cal_id, _minimal_ical("Owner Created Event")
+            )
+
+            second_view = second_account_client.get_calendars(account_id=owner_account_id)
+            shared = next((c for c in second_view if c.id == cal_id), None)
+            assert shared is not None, f"{server}: calendar not visible to second account."
+
+            obj = shared.get_object_by_uid(next(o.data["uid"] for o in shared.search()))
+            with obj.edit_icalendar_instance() as cal:
+                cal.subcomponents[0]["SUMMARY"] = "Edited By Sharee"
+            obj.save()
+
+            updated = calendar_management_client.get_event(event_id)
+            assert updated.get_data()["title"] == "Edited By Sharee", (
+                f"{server}: edit made via the shared calendar object's save() was not "
+                f"visible in the owner's own account; update_event() likely targeted "
+                f"the wrong account."
+            )
+
+            second_account_client.delete_event(event_id, account_id=owner_account_id)
+            with pytest.raises(JMAPMethodError):
+                calendar_management_client.get_event(event_id)
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+
 @pytest.fixture
 def event_client(request, server):
     return request.getfixturevalue("client" if server == "cyrus" else "stalwart_client")
@@ -248,14 +491,12 @@ class TestJMAPEventIntegration:
         with pytest.raises(JMAPMethodError):
             event_client.get_event(event_id)
 
-    def test_event_query_time_range(self, server, event_client, event_calendar_id):
+    def test_event_query_time_range(self, event_client, event_calendar_id):
         title = "Query Range Test Event"
         event_id = event_client.create_event(event_calendar_id, _minimal_ical(title))
         try:
-            # Stalwart does not support the inCalendars filter; query without calendar_id.
-            search_calendar_id = None if server == "stalwart" else event_calendar_id
             results = event_client.search_events(
-                calendar_id=search_calendar_id,
+                calendar_id=event_calendar_id,
                 start="2026-06-01T00:00:00",
                 end="2026-06-02T00:00:00",
             )

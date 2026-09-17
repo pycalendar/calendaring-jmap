@@ -424,6 +424,12 @@ _CALENDAR_JSON_FULL = {
     "myRights": {"mayReadItems": True, "mayAddItems": True},
     "sortOrder": 1,
     "isVisible": True,
+    "timeZone": "Europe/Berlin",
+    "shareWith": {"principal1": {"mayReadItems": True, "mayShare": False}},
+    "defaultAlertsWithTime": {"alert1": {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}},
+    "defaultAlertsWithoutTime": {
+        "alert2": {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}
+    },
 }
 
 _CALENDAR_JSON_MINIMAL = {
@@ -443,6 +449,14 @@ class TestJMAPCalendar:
         assert cal.my_rights == {"mayReadItems": True, "mayAddItems": True}
         assert cal.sort_order == 1
         assert cal.is_visible is True
+        assert cal.time_zone == "Europe/Berlin"
+        assert cal.share_with == {"principal1": {"mayReadItems": True, "mayShare": False}}
+        assert cal.default_alerts_with_time == {
+            "alert1": {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}
+        }
+        assert cal.default_alerts_without_time == {
+            "alert2": {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}
+        }
 
     def test_from_jmap_minimal_uses_defaults(self):
         cal = JMAPCalendar.from_jmap(_CALENDAR_JSON_MINIMAL)
@@ -454,6 +468,26 @@ class TestJMAPCalendar:
         assert cal.my_rights == {}
         assert cal.sort_order == 0
         assert cal.is_visible is True
+        assert cal.time_zone is None
+        assert cal.share_with is None
+        assert cal.default_alerts_with_time is None
+        assert cal.default_alerts_without_time is None
+
+    def test_to_jmap_includes_new_optional_fields_when_set(self):
+        cal = JMAPCalendar.from_jmap(_CALENDAR_JSON_FULL)
+        d = cal.to_jmap()
+        assert d["timeZone"] == "Europe/Berlin"
+        assert d["shareWith"] == {"principal1": {"mayReadItems": True, "mayShare": False}}
+        assert "defaultAlertsWithTime" in d
+        assert "defaultAlertsWithoutTime" in d
+
+    def test_to_jmap_omits_new_optional_fields_when_unset(self):
+        cal = JMAPCalendar.from_jmap(_CALENDAR_JSON_MINIMAL)
+        d = cal.to_jmap()
+        assert "timeZone" not in d
+        assert "shareWith" not in d
+        assert "defaultAlertsWithTime" not in d
+        assert "defaultAlertsWithoutTime" not in d
 
     def test_to_jmap_includes_required_fields(self):
         cal = JMAPCalendar.from_jmap(_CALENDAR_JSON_MINIMAL)
@@ -569,7 +603,7 @@ class TestJMAPCalendar:
         cal, captured = self._capturing_calendar(monkeypatch, resp, calendar_id="my-cal")
         cal.search()
         query_args = captured["json"]["methodCalls"][0][1]
-        assert query_args["filter"]["inCalendars"] == ["my-cal"]
+        assert query_args["filter"]["inCalendar"] == "my-cal"
 
     def test_calendar_search_with_date_range(self, monkeypatch):
         resp = self._query_get_response([self._RAW_EVENT])
@@ -607,7 +641,7 @@ class TestJMAPCalendar:
         cal.search(event=True, todo=False, unknown_param="value")
         query_args = captured["json"]["methodCalls"][0][1]
         # Should only contain the calendar filter, no unknown params
-        assert query_args["filter"] == {"inCalendars": [cal.id]}
+        assert query_args["filter"] == {"inCalendar": cal.id}
 
     def test_calendar_search_with_text(self, monkeypatch):
         resp = self._query_get_response([self._RAW_EVENT])
@@ -644,6 +678,28 @@ class TestJMAPCalendar:
         create_args = captured["json"]["methodCalls"][0][1]
         event_payload = create_args["create"]["new-0"]
         assert event_payload.get("calendarIds") == {"my-calendar": True}
+
+    def test_calendar_add_event_uses_calendar_account_id_when_shared(self, monkeypatch):
+        _MINIMAL_ICAL = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            "UID:test@example.com\r\nSUMMARY:Test\r\n"
+            "DTSTART:20260115T090000Z\r\nDTEND:20260115T100000Z\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        resp = self._set_response(created={"new-0": {"id": "sv-cal-1"}})
+        cal, captured = self._capturing_calendar(monkeypatch, resp, calendar_id="shared-cal")
+        cal._account_id = "owner-account"
+        cal.add_event(_MINIMAL_ICAL)
+        create_args = captured["json"]["methodCalls"][0][1]
+        assert create_args["accountId"] == "owner-account"
+
+    def test_calendar_search_uses_calendar_account_id_when_shared(self, monkeypatch):
+        resp = self._query_get_response([self._RAW_EVENT])
+        cal, captured = self._capturing_calendar(monkeypatch, resp, calendar_id="shared-cal")
+        cal._account_id = "owner-account"
+        cal.search()
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["accountId"] == "owner-account"
 
     def test_calendar_search_naive_datetime_treated_as_utc(self, monkeypatch):
         resp = self._query_get_response([self._RAW_EVENT])
@@ -698,7 +754,7 @@ class TestJMAPCalendar:
         result = asyncio.run(cal.get_object_by_uid("some-uid"))
         assert result == "obj"
         mock_client._get_object_by_uid.assert_awaited_once_with(
-            "some-uid", calendar_id="cal1", parent=cal
+            "some-uid", calendar_id="cal1", parent=cal, account_id=None
         )
 
     def test_calendar_add_event_dispatches_to_async_when_async_backed(self):
@@ -712,7 +768,7 @@ class TestJMAPCalendar:
         result = asyncio.run(cal.add_event("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
         assert result == "ev-new-id"
         mock_client.create_event.assert_awaited_once_with(
-            "cal1", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
+            "cal1", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", account_id=None
         )
 
 
@@ -768,6 +824,19 @@ class TestJMAPCalendarObject:
         call_args = mock_client.update_event.call_args
         assert call_args[0][0] == "ev-obj-1"
         assert isinstance(call_args[0][1], str)
+        assert call_args.kwargs["account_id"] is None
+
+    def test_save_uses_parent_account_id_when_shared(self):
+        mock_client = MagicMock()
+        mock_parent = JMAPCalendar(id="cal1", name="Test")
+        mock_parent._client = mock_client
+        mock_parent._account_id = "owner-account"
+
+        obj = JMAPCalendarObject(data=_MINIMAL_JSCAL_DICT, parent=mock_parent)
+        obj.save()
+
+        mock_client.update_event.assert_called_once()
+        assert mock_client.update_event.call_args.kwargs["account_id"] == "owner-account"
 
     def test_save_raises_without_parent(self):
         obj = JMAPCalendarObject(data=_MINIMAL_JSCAL_DICT, parent=None)
@@ -785,7 +854,11 @@ class TestJMAPCalendarObject:
 from calendaring_jmap._methods.calendar import (
     build_calendar_changes,
     build_calendar_get,
+    build_calendar_set_create,
+    build_calendar_set_destroy,
+    build_calendar_set_update,
     parse_calendar_get,
+    parse_calendar_set,
 )
 
 
@@ -831,6 +904,47 @@ class TestCalendarMethodBuilders:
         assert args["accountId"] == "u1"
         assert args["sinceState"] == "state-abc"
         assert isinstance(call_id, str)
+
+    def test_build_calendar_set_create_structure(self):
+        method, args, call_id = build_calendar_set_create("u1", {"new-0": {"name": "Work"}})
+        assert method == "Calendar/set"
+        assert args["accountId"] == "u1"
+        assert args["create"] == {"new-0": {"name": "Work"}}
+        assert isinstance(call_id, str)
+
+    def test_build_calendar_set_update_structure(self):
+        method, args, call_id = build_calendar_set_update("u1", {"cal1": {"name": "Renamed"}})
+        assert method == "Calendar/set"
+        assert args["accountId"] == "u1"
+        assert args["update"] == {"cal1": {"name": "Renamed"}}
+
+    def test_build_calendar_set_destroy_structure(self):
+        method, args, call_id = build_calendar_set_destroy("u1", ["cal1", "cal2"])
+        assert method == "Calendar/set"
+        assert args["accountId"] == "u1"
+        assert args["destroy"] == ["cal1", "cal2"]
+        assert args["onDestroyRemoveEvents"] is False
+
+    def test_build_calendar_set_destroy_on_destroy_remove_events(self):
+        _, args, _ = build_calendar_set_destroy("u1", ["cal1"], on_destroy_remove_events=True)
+        assert args["onDestroyRemoveEvents"] is True
+
+    def test_parse_calendar_set_returns_created(self):
+        created, updated, destroyed, not_created, not_updated, not_destroyed = parse_calendar_set(
+            {"created": {"new-0": {"id": "srv1"}}}
+        )
+        assert created == {"new-0": {"id": "srv1"}}
+        assert updated == {}
+        assert destroyed == []
+        assert not_created == {}
+        assert not_updated == {}
+        assert not_destroyed == {}
+
+    def test_parse_calendar_set_returns_not_destroyed_with_calendar_has_event(self):
+        _, _, _, _, _, not_destroyed = parse_calendar_set(
+            {"notDestroyed": {"cal1": {"type": "calendarHasEvent"}}}
+        )
+        assert not_destroyed == {"cal1": {"type": "calendarHasEvent"}}
 
 
 from calendaring_jmap.client import JMAPClient
@@ -954,6 +1068,16 @@ class TestJMAPClient:
         assert cals[0].id == "cal1"
         assert cals[1].id == "cal2"
 
+    def test_get_calendars_binds_own_account_id_by_default(self, monkeypatch):
+        client = _make_client_with_mocked_session(monkeypatch, _CALENDAR_GET_RESPONSE)
+        cals = client.get_calendars()
+        assert cals[0]._account_id == _USERNAME
+
+    def test_get_calendars_binds_requested_account_id(self, monkeypatch):
+        client = _make_client_with_mocked_session(monkeypatch, _CALENDAR_GET_RESPONSE)
+        cals = client.get_calendars(account_id="owner-account")
+        assert cals[0]._account_id == "owner-account"
+
     def test_get_calendars_empty_response(self, monkeypatch):
         empty_response = {
             "methodResponses": [
@@ -992,6 +1116,8 @@ class TestJMAPClient:
         assert client._auth is prebuilt
 
 
+from calendaring_jmap._methods.event import parse_event_set
+from calendaring_jmap._methods.task import parse_task_set
 from calendaring_jmap.client import _JMAPClientBase
 
 
@@ -1004,9 +1130,16 @@ class TestJMAPClientBaseParsers:
     def test_parse_get_calendars_returns_empty_list_without_match(self):
         assert _JMAPClientBase._parse_get_calendars([], client=None, is_async=False) == []
 
-    def test_parse_create_event_response_raises_without_match(self):
-        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
-            _JMAPClientBase._parse_create_event_response([], api_url=_API_URL)
+    _SET_METHODS_BY_OBJECT = {
+        "CalendarEvent/set": parse_event_set,
+        "Calendar/set": parse_calendar_set,
+        "Task/set": parse_task_set,
+    }
+
+    def test_parse_create_response_raises_without_match(self):
+        for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
+            with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
+                _JMAPClientBase._parse_create_response([], _API_URL, set_method, parse_set)
 
     def test_parse_get_event_response_raises_without_match(self):
         with pytest.raises(JMAPMethodError, match="No CalendarEvent/get response"):
@@ -1025,9 +1158,10 @@ class TestJMAPClientBaseParsers:
         )
         assert result.id == "ev1"
 
-    def test_parse_update_event_response_raises_without_match(self):
-        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
-            _JMAPClientBase._parse_update_event_response([], api_url=_API_URL, event_id="ev1")
+    def test_parse_update_response_raises_without_match(self):
+        for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
+            with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
+                _JMAPClientBase._parse_update_response([], _API_URL, set_method, parse_set, "id1")
 
     def test_parse_search_response_returns_empty_list_without_match(self):
         assert _JMAPClientBase._parse_search_response([], parent=None) == []
@@ -1036,28 +1170,17 @@ class TestJMAPClientBaseParsers:
         with pytest.raises(JMAPMethodError, match="No CalendarEvent/get response"):
             _JMAPClientBase._parse_get_sync_token_response([], api_url=_API_URL)
 
-    def test_parse_delete_event_response_raises_without_match(self):
-        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
-            _JMAPClientBase._parse_delete_event_response([], api_url=_API_URL, event_id="ev1")
+    def test_parse_delete_response_raises_without_match(self):
+        for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
+            with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
+                _JMAPClientBase._parse_delete_response([], _API_URL, set_method, parse_set, "id1")
 
     def test_parse_get_task_lists_response_returns_empty_list_without_match(self):
         assert _JMAPClientBase._parse_get_task_lists_response([]) == []
 
-    def test_parse_create_task_response_raises_without_match(self):
-        with pytest.raises(JMAPMethodError, match="No Task/set response"):
-            _JMAPClientBase._parse_create_task_response([], api_url=_API_URL)
-
     def test_parse_get_task_response_raises_without_match(self):
         with pytest.raises(JMAPMethodError, match="No Task/get response"):
             _JMAPClientBase._parse_get_task_response([], api_url=_API_URL, task_id="t1")
-
-    def test_parse_update_task_response_raises_without_match(self):
-        with pytest.raises(JMAPMethodError, match="No Task/set response"):
-            _JMAPClientBase._parse_update_task_response([], api_url=_API_URL, task_id="t1")
-
-    def test_parse_delete_task_response_raises_without_match(self):
-        with pytest.raises(JMAPMethodError, match="No Task/set response"):
-            _JMAPClientBase._parse_delete_task_response([], api_url=_API_URL, task_id="t1")
 
     def test_parse_event_changes_response_without_match_returns_empty_defaults(self):
         result = _JMAPClientBase._parse_event_changes_response([], api_url=_API_URL)
@@ -1097,17 +1220,19 @@ class TestJMAPClientBaseParsers:
             == []
         )
 
-    def test_parse_create_event_response_skips_unrelated_responses_in_batch(self):
-        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
-            _JMAPClientBase._parse_create_event_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL
-            )
+    def test_parse_create_response_skips_unrelated_responses_in_batch(self):
+        for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
+            with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
+                _JMAPClientBase._parse_create_response(
+                    [self._UNRELATED_RESPONSE], _API_URL, set_method, parse_set
+                )
 
-    def test_parse_update_event_response_skips_unrelated_responses_in_batch(self):
-        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
-            _JMAPClientBase._parse_update_event_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL, event_id="ev1"
-            )
+    def test_parse_update_response_skips_unrelated_responses_in_batch(self):
+        for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
+            with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
+                _JMAPClientBase._parse_update_response(
+                    [self._UNRELATED_RESPONSE], _API_URL, set_method, parse_set, "id1"
+                )
 
     def test_parse_search_response_skips_unrelated_responses_in_batch(self):
         assert _JMAPClientBase._parse_search_response([self._UNRELATED_RESPONSE], parent=None) == []
@@ -1124,36 +1249,19 @@ class TestJMAPClientBaseParsers:
         )
         assert result == ([], [], [], "")
 
-    def test_parse_delete_event_response_skips_unrelated_responses_in_batch(self):
-        with pytest.raises(JMAPMethodError, match="No CalendarEvent/set response"):
-            _JMAPClientBase._parse_delete_event_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL, event_id="ev1"
-            )
+    def test_parse_delete_response_skips_unrelated_responses_in_batch(self):
+        for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
+            with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
+                _JMAPClientBase._parse_delete_response(
+                    [self._UNRELATED_RESPONSE], _API_URL, set_method, parse_set, "id1"
+                )
 
     def test_parse_get_task_lists_response_skips_unrelated_responses_in_batch(self):
         assert _JMAPClientBase._parse_get_task_lists_response([self._UNRELATED_RESPONSE]) == []
 
-    def test_parse_create_task_response_skips_unrelated_responses_in_batch(self):
-        with pytest.raises(JMAPMethodError, match="No Task/set response"):
-            _JMAPClientBase._parse_create_task_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL
-            )
-
     def test_parse_get_task_response_skips_unrelated_responses_in_batch(self):
         with pytest.raises(JMAPMethodError, match="No Task/get response"):
             _JMAPClientBase._parse_get_task_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
-            )
-
-    def test_parse_update_task_response_skips_unrelated_responses_in_batch(self):
-        with pytest.raises(JMAPMethodError, match="No Task/set response"):
-            _JMAPClientBase._parse_update_task_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
-            )
-
-    def test_parse_delete_task_response_skips_unrelated_responses_in_batch(self):
-        with pytest.raises(JMAPMethodError, match="No Task/set response"):
-            _JMAPClientBase._parse_delete_task_response(
                 [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
             )
 
@@ -1312,7 +1420,6 @@ from calendaring_jmap._methods.event import (
     parse_event_changes,
     parse_event_get,
     parse_event_query,
-    parse_event_set,
 )
 from calendaring_jmap._methods.task import (
     build_task_get,
@@ -1322,7 +1429,6 @@ from calendaring_jmap._methods.task import (
     build_task_set_update,
     parse_task_get,
     parse_task_list_get,
-    parse_task_set,
 )
 
 
@@ -1681,6 +1787,17 @@ class TestIcalToJscal:
         assert result["start"] == "2024-06-15T10:00:00"
         assert result["timeZone"] == "Etc/UTC"
         assert result["duration"] == "PT1H"
+
+    def test_version_is_2_0(self):
+        """RFC 8984 has no version property; jscalendarbis adds it and
+        registers "1.0" for RFC 8984-conformant data, "2.0" for its own.
+        This converter's output is actually RFC 8984-shaped ("1.0" would be
+        strictly accurate), but it sends "2.0" since the test servers this
+        project runs against require it. See ical_to_jscal's inline comment
+        for the full reasoning."""
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Test Event\r\n")
+        result = ical_to_jscal(ical)
+        assert result["version"] == "2.0"
 
     def test_all_day_event(self):
         ical = _make_ical(
@@ -2936,7 +3053,45 @@ class TestRoundTrip:
         assert "alice@example.com" in ctx["ical"] or "ORGANIZER" in ctx["ical"]
 
 
-class TestJMAPClientEvents:
+class _MockedClientMixin:
+    """Shared client/response mocking for tests that drive JMAPClient
+    through a mocked ``_http_session`` rather than real HTTP calls."""
+
+    def _make_mock(self, resp_json):
+        m = MagicMock()
+        m.status_code = 200
+        m.json.return_value = resp_json
+        m.raise_for_status = MagicMock()
+        return m
+
+    def _make_client(self):
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
+        return client
+
+    def _mock_http(self, client, response=None, side_effect=None):
+        mock_http = MagicMock()
+        if side_effect is not None:
+            mock_http.post.side_effect = side_effect
+        elif response is not None:
+            mock_http.post.return_value = response
+        client._http_session = mock_http
+        return mock_http
+
+    def _capturing_client(self, monkeypatch, resp):
+        """Return (client, captured) where captured["json"] is set on each POST."""
+        captured: dict = {}
+        client = self._make_client()
+
+        def capturing_post(*args, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return self._make_mock(resp)
+
+        self._mock_http(client, side_effect=capturing_post)
+        return client, captured
+
+
+class TestJMAPClientEvents(_MockedClientMixin):
     _MINIMAL_ICAL = (
         "BEGIN:VCALENDAR\r\n"
         "VERSION:2.0\r\n"
@@ -3155,24 +3310,19 @@ class TestJMAPClientEvents:
             client.delete_event("ev1")
         assert exc_info.value.error_type == "notFound"
 
-    def _capturing_client(self, monkeypatch, resp):
-        """Return (client, captured) where captured["json"] is set on each POST."""
-        captured = {}
-        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
-        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
+    def test_update_event_uses_given_account_id(self, monkeypatch):
+        resp = self._set_response(updated={"ev1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.update_event("ev1", self._MINIMAL_ICAL, account_id="owner-account")
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["accountId"] == "owner-account"
 
-        def capturing_post(*args, **kwargs):
-            captured["json"] = kwargs.get("json", {})
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = resp
-            mock_resp.raise_for_status = MagicMock()
-            return mock_resp
-
-        mock_http = MagicMock()
-        mock_http.post.side_effect = capturing_post
-        client._http_session = mock_http
-        return client, captured
+    def test_delete_event_uses_given_account_id(self, monkeypatch):
+        resp = self._set_response(destroyed=["ev1"])
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.delete_event("ev1", account_id="owner-account")
+        destroy_args = captured["json"]["methodCalls"][0][1]
+        assert destroy_args["accountId"] == "owner-account"
 
     def _query_get_response(self, items):
         return {
@@ -3209,7 +3359,7 @@ class TestJMAPClientEvents:
         client, captured = self._capturing_client(monkeypatch, resp)
         client.search_events(calendar_id="my-cal")
         query_args = captured["json"]["methodCalls"][0][1]
-        assert query_args["filter"]["inCalendars"] == ["my-cal"]
+        assert query_args["filter"]["inCalendar"] == "my-cal"
 
     def test_search_events_passes_date_range_filter(self, monkeypatch):
         resp = self._query_get_response([self._RAW_EVENT])
@@ -3234,30 +3384,159 @@ class TestJMAPClientEvents:
         assert "filter" not in query_args
 
 
-class _MockedClientMixin:
-    """Shared client/response mocking for tests that drive JMAPClient
-    through a mocked ``_http_session`` rather than real HTTP calls."""
+class TestJMAPClientCalendars(_MockedClientMixin):
+    def _set_response(self, **kwargs):
+        return {"methodResponses": [["Calendar/set", kwargs, "cal-set-create-0"]]}
 
-    def _make_mock(self, resp_json):
-        m = MagicMock()
-        m.status_code = 200
-        m.json.return_value = resp_json
-        m.raise_for_status = MagicMock()
-        return m
+    def _get_response(self, items):
+        return {
+            "methodResponses": [
+                [
+                    "Calendar/get",
+                    {"accountId": _USERNAME, "list": items, "notFound": []},
+                    "cal-get-0",
+                ]
+            ]
+        }
 
-    def _make_client(self):
-        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
-        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
-        return client
+    def test_create_calendar_returns_server_id(self, monkeypatch):
+        resp = self._set_response(created={"new-0": {"id": "cal-new-1"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        cal_id = client.create_calendar("Work")
+        assert cal_id == "cal-new-1"
 
-    def _mock_http(self, client, response=None, side_effect=None):
-        mock_http = MagicMock()
-        if side_effect is not None:
-            mock_http.post.side_effect = side_effect
-        elif response is not None:
-            mock_http.post.return_value = response
-        client._http_session = mock_http
-        return mock_http
+    def test_create_calendar_raises_on_failure(self, monkeypatch):
+        resp = self._set_response(
+            notCreated={"new-0": {"type": "invalidProperties", "properties": ["name"]}}
+        )
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.create_calendar("")
+        assert exc_info.value.error_type == "invalidProperties"
+
+    def test_create_calendar_passes_color_and_timezone(self, monkeypatch):
+        resp = self._set_response(created={"new-0": {"id": "cal-new-2"}})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.create_calendar("Work", color="#3a86ff", timezone="Europe/Berlin")
+        create_args = captured["json"]["methodCalls"][0][1]
+        cal_payload = create_args["create"]["new-0"]
+        assert cal_payload == {"name": "Work", "color": "#3a86ff", "timeZone": "Europe/Berlin"}
+
+    def test_update_calendar_success(self, monkeypatch):
+        resp = self._set_response(updated={"cal1": None})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        client.update_calendar("cal1", name="Renamed")
+
+    def test_update_calendar_raises_on_failure(self, monkeypatch):
+        resp = self._set_response(notUpdated={"cal1": {"type": "notFound"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.update_calendar("cal1", name="Renamed")
+        assert exc_info.value.error_type == "notFound"
+
+    def test_update_calendar_only_patches_given_fields(self, monkeypatch):
+        resp = self._set_response(updated={"cal1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.update_calendar("cal1", color="#ff0000")
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["update"]["cal1"] == {"color": "#ff0000"}
+
+    def test_delete_calendar_success(self, monkeypatch):
+        resp = self._set_response(destroyed=["cal1"])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        client.delete_calendar("cal1")
+
+    def test_delete_calendar_raises_calendar_has_event(self, monkeypatch):
+        resp = self._set_response(notDestroyed={"cal1": {"type": "calendarHasEvent"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.delete_calendar("cal1")
+        assert exc_info.value.error_type == "calendarHasEvent"
+
+    def test_delete_calendar_passes_on_destroy_remove_events(self, monkeypatch):
+        resp = self._set_response(destroyed=["cal1"])
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.delete_calendar("cal1", on_destroy_remove_events=True)
+        destroy_args = captured["json"]["methodCalls"][0][1]
+        assert destroy_args["onDestroyRemoveEvents"] is True
+
+    def test_share_calendar_patches_keyed_path(self, monkeypatch):
+        resp = self._set_response(updated={"cal1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.share_calendar("cal1", "principal1", {"mayReadItems": True})
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["update"]["cal1"] == {"shareWith/principal1": {"mayReadItems": True}}
+
+    def test_share_calendar_raises_on_forbidden(self, monkeypatch):
+        resp = self._set_response(notUpdated={"cal1": {"type": "forbidden"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.share_calendar("cal1", "principal1", {"mayReadItems": True})
+        assert exc_info.value.error_type == "forbidden"
+
+    def test_get_calendar_subscriptions_filters_unsubscribed(self, monkeypatch):
+        resp = self._get_response(
+            [
+                {"id": "cal1", "name": "Subscribed", "isSubscribed": True},
+                {"id": "cal2", "name": "NotSubscribed", "isSubscribed": False},
+            ]
+        )
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        subs = client.get_calendar_subscriptions()
+        assert [cal.id for cal in subs] == ["cal1"]
+
+    def test_set_default_alerts_with_time_only(self, monkeypatch):
+        resp = self._set_response(updated={"cal1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        alert = {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}
+        client.set_default_alerts("cal1", alerts_with_time={"a1": alert})
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["update"]["cal1"] == {"defaultAlertsWithTime": {"a1": alert}}
+
+    def test_set_default_alerts_both(self, monkeypatch):
+        resp = self._set_response(updated={"cal1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        alert = {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}
+        client.set_default_alerts(
+            "cal1", alerts_with_time={"a1": alert}, alerts_without_time={"a2": alert}
+        )
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["update"]["cal1"] == {
+            "defaultAlertsWithTime": {"a1": alert},
+            "defaultAlertsWithoutTime": {"a2": alert},
+        }
+
+    def test_set_default_alerts_raises_on_failure(self, monkeypatch):
+        resp = self._set_response(notUpdated={"cal1": {"type": "notFound"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.set_default_alerts("cal1", alerts_with_time={})
+        assert exc_info.value.error_type == "notFound"
+
+    def test_update_calendar_patch_uses_given_account_id(self, monkeypatch):
+        """update_calendar/delete_calendar/set_default_alerts all route through
+        _update_calendar_patch, so one direct test on it covers all three."""
+        resp = self._set_response(updated={"cal1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client._update_calendar_patch("cal1", {"name": "Renamed"}, account_id="owner-account")
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["accountId"] == "owner-account"
+
+    def test_delete_calendar_uses_given_account_id(self, monkeypatch):
+        resp = self._set_response(destroyed=["cal1"])
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.delete_calendar("cal1", account_id="owner-account")
+        destroy_args = captured["json"]["methodCalls"][0][1]
+        assert destroy_args["accountId"] == "owner-account"
+
+    def test_share_calendar_uses_owning_account_id(self, monkeypatch):
+        resp = self._set_response(updated={"cal1": None})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.share_calendar(
+            "cal1", "principal1", {"mayReadItems": True}, owning_account_id="owner-account"
+        )
+        update_args = captured["json"]["methodCalls"][0][1]
+        assert update_args["accountId"] == "owner-account"
 
 
 class TestJMAPClientSync(_MockedClientMixin):
@@ -3709,6 +3988,9 @@ class TestAsyncJMAPClient:
             ]
         }
 
+    def _calendar_set_resp(self, **kwargs):
+        return {"methodResponses": [["Calendar/set", kwargs, "cal-set-0"]]}
+
     def _event_set_resp(self, **kwargs):
         return {"methodResponses": [["CalendarEvent/set", kwargs, "ev-set-0"]]}
 
@@ -3825,6 +4107,106 @@ class TestAsyncJMAPClient:
         assert result[0].name == "Personal"
 
     @pytest.mark.asyncio
+    async def test_get_calendars_binds_own_account_id_by_default(self, monkeypatch):
+        cal = {"id": "cal1", "name": "Personal", "isSubscribed": True, "myRights": {}}
+        self._patch_async_session(monkeypatch, self._calendar_get_resp([cal]))
+        result = await self._make_client().get_calendars()
+        assert result[0]._account_id == _USERNAME
+
+    @pytest.mark.asyncio
+    async def test_get_calendars_binds_requested_account_id(self, monkeypatch):
+        cal = {"id": "cal1", "name": "Personal", "isSubscribed": True, "myRights": {}}
+        self._patch_async_session(monkeypatch, self._calendar_get_resp([cal]))
+        result = await self._make_client().get_calendars(account_id="owner-account")
+        assert result[0]._account_id == "owner-account"
+
+    @pytest.mark.asyncio
+    async def test_create_calendar_returns_server_id(self, monkeypatch):
+        resp = self._calendar_set_resp(created={"new-0": {"id": "cal-async-1"}})
+        self._patch_async_session(monkeypatch, resp)
+        cal_id = await self._make_client().create_calendar("Work")
+        assert cal_id == "cal-async-1"
+
+    @pytest.mark.asyncio
+    async def test_create_calendar_raises_on_failure(self, monkeypatch):
+        resp = self._calendar_set_resp(
+            notCreated={"new-0": {"type": "invalidProperties", "properties": ["name"]}}
+        )
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().create_calendar("")
+        assert exc_info.value.error_type == "invalidProperties"
+
+    @pytest.mark.asyncio
+    async def test_update_calendar_success(self, monkeypatch):
+        resp = self._calendar_set_resp(updated={"cal1": None})
+        self._patch_async_session(monkeypatch, resp)
+        await self._make_client().update_calendar("cal1", name="Renamed")
+
+    @pytest.mark.asyncio
+    async def test_update_calendar_raises_on_failure(self, monkeypatch):
+        resp = self._calendar_set_resp(notUpdated={"cal1": {"type": "notFound"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().update_calendar("cal1", name="Renamed")
+        assert exc_info.value.error_type == "notFound"
+
+    @pytest.mark.asyncio
+    async def test_delete_calendar_success(self, monkeypatch):
+        resp = self._calendar_set_resp(destroyed=["cal1"])
+        self._patch_async_session(monkeypatch, resp)
+        await self._make_client().delete_calendar("cal1")
+
+    @pytest.mark.asyncio
+    async def test_delete_calendar_raises_calendar_has_event(self, monkeypatch):
+        resp = self._calendar_set_resp(notDestroyed={"cal1": {"type": "calendarHasEvent"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().delete_calendar("cal1")
+        assert exc_info.value.error_type == "calendarHasEvent"
+
+    @pytest.mark.asyncio
+    async def test_share_calendar_success(self, monkeypatch):
+        resp = self._calendar_set_resp(updated={"cal1": None})
+        self._patch_async_session(monkeypatch, resp)
+        await self._make_client().share_calendar("cal1", "principal1", {"mayReadItems": True})
+
+    @pytest.mark.asyncio
+    async def test_share_calendar_raises_on_forbidden(self, monkeypatch):
+        resp = self._calendar_set_resp(notUpdated={"cal1": {"type": "forbidden"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().share_calendar("cal1", "principal1", {"mayReadItems": True})
+        assert exc_info.value.error_type == "forbidden"
+
+    @pytest.mark.asyncio
+    async def test_get_calendar_subscriptions_filters_unsubscribed(self, monkeypatch):
+        resp = self._calendar_get_resp(
+            [
+                {"id": "cal1", "name": "Subscribed", "isSubscribed": True},
+                {"id": "cal2", "name": "NotSubscribed", "isSubscribed": False},
+            ]
+        )
+        self._patch_async_session(monkeypatch, resp)
+        subs = await self._make_client().get_calendar_subscriptions()
+        assert [cal.id for cal in subs] == ["cal1"]
+
+    @pytest.mark.asyncio
+    async def test_set_default_alerts_success(self, monkeypatch):
+        resp = self._calendar_set_resp(updated={"cal1": None})
+        self._patch_async_session(monkeypatch, resp)
+        alert = {"@type": "Alert", "trigger": {"@type": "OffsetTrigger"}}
+        await self._make_client().set_default_alerts("cal1", alerts_with_time={"a1": alert})
+
+    @pytest.mark.asyncio
+    async def test_set_default_alerts_raises_on_failure(self, monkeypatch):
+        resp = self._calendar_set_resp(notUpdated={"cal1": {"type": "notFound"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().set_default_alerts("cal1", alerts_with_time={})
+        assert exc_info.value.error_type == "notFound"
+
+    @pytest.mark.asyncio
     async def test_create_event_returns_id(self, monkeypatch):
         resp = self._event_set_resp(created={"new-0": {"id": "ev-new-1"}}, notCreated={})
         self._patch_async_session(monkeypatch, resp)
@@ -3870,10 +4252,28 @@ class TestAsyncJMAPClient:
         assert exc_info.value.error_type == "notFound"
 
     @pytest.mark.asyncio
+    async def test_update_event_uses_given_account_id(self, monkeypatch):
+        resp = self._event_set_resp(updated={"ev-async-1": None}, notUpdated={})
+        mock_http = self._patch_async_session(monkeypatch, resp)
+        await self._make_client().update_event(
+            "ev-async-1", self._MINIMAL_ICAL, account_id="owner-account"
+        )
+        update_args = mock_http.post.call_args.kwargs["json"]["methodCalls"][0][1]
+        assert update_args["accountId"] == "owner-account"
+
+    @pytest.mark.asyncio
     async def test_delete_event_success(self, monkeypatch):
         resp = self._event_set_resp(destroyed=["ev-async-1"], notDestroyed={})
         self._patch_async_session(monkeypatch, resp)
         await self._make_client().delete_event("ev-async-1")
+
+    @pytest.mark.asyncio
+    async def test_delete_event_uses_given_account_id(self, monkeypatch):
+        resp = self._event_set_resp(destroyed=["ev-async-1"], notDestroyed={})
+        mock_http = self._patch_async_session(monkeypatch, resp)
+        await self._make_client().delete_event("ev-async-1", account_id="owner-account")
+        destroy_args = mock_http.post.call_args.kwargs["json"]["methodCalls"][0][1]
+        assert destroy_args["accountId"] == "owner-account"
 
     @pytest.mark.asyncio
     async def test_delete_event_raises_on_failure(self, monkeypatch):
@@ -4069,7 +4469,7 @@ class TestAsyncJMAPClient:
         )
         await client.search_events(calendar_id="my-cal")
         query_args = captured["json"]["methodCalls"][0][1]
-        assert query_args["filter"]["inCalendars"] == ["my-cal"]
+        assert query_args["filter"]["inCalendar"] == "my-cal"
 
     @pytest.mark.asyncio
     async def test_search_events_passes_date_range_filter(self, monkeypatch):

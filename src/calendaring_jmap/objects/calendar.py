@@ -46,13 +46,29 @@ class JMAPCalendar(Generic[_M]):
 
     Attributes:
         id: Server-assigned calendar identifier.
-        name: Display name of the calendar.
+        name: Display name of the calendar. Per-user: a sharee who sets
+            this gets their own copy, leaving the owner's name unchanged.
         description: Optional longer description.
-        color: Optional CSS color string (e.g. ``"#ff0000"``).
+        color: Optional CSS color string (e.g. ``"#ff0000"``). Per-user,
+            same override rule as ``name``.
         is_subscribed: Whether the user is subscribed to this calendar.
         my_rights: Dict of right names → bool for the current user.
-        sort_order: Hint for display ordering (lower = first).
-        is_visible: Whether the calendar should be displayed.
+        sort_order: Hint for display ordering (lower = first). Per-user.
+        is_visible: Whether the calendar should be displayed. Per-user.
+        time_zone: IANA time zone used to resolve floating events on this
+            calendar (e.g. for alerts, availability). ``None`` falls back to
+            the account's own time zone. Per-user, same override rule as
+            ``name``.
+        share_with: Map of Principal ID to a dict of right names → bool
+            (``mayReadItems``, ``mayWriteAll``, etc.). Only visible to and
+            settable by users with the ``mayShare`` right; the server
+            returns ``None`` here for anyone else. Not per-user: this is the
+            calendar's actual sharing configuration.
+        default_alerts_with_time: Map of alert ID to Alert dict, applied to
+            new timed events on this calendar when ``useDefaultAlerts`` is
+            set. Per-user, not inherited from the owner.
+        default_alerts_without_time: Same as ``default_alerts_with_time``,
+            for all-day events.
     """
 
     id: str
@@ -63,12 +79,23 @@ class JMAPCalendar(Generic[_M]):
     my_rights: dict = field(default_factory=dict)
     sort_order: int = 0
     is_visible: bool = True
+    time_zone: str | None = None
+    share_with: dict | None = None
+    default_alerts_with_time: dict | None = None
+    default_alerts_without_time: dict | None = None
 
     # Injected by JMAPClient.get_calendars() / AsyncJMAPClient.get_calendars()
     _client: JMAPClient | AsyncJMAPClient | None = field(
         default=None, init=False, repr=False, compare=False
     )
     _is_async: bool = field(default=False, init=False, repr=False, compare=False)
+
+    ## The JMAP account this calendar was fetched from, i.e. what was passed
+    ## to get_calendars(account_id=...). Not a Calendar wire property: it is
+    ## what makes .search()/.add_event()/.get_object_by_uid() target the
+    ## calendar's actual owning account instead of the caller's own primary
+    ## account when the calendar was reached via someone else's share.
+    _account_id: str | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def _bound_client(self) -> JMAPClient | AsyncJMAPClient:
@@ -110,12 +137,16 @@ class JMAPCalendar(Generic[_M]):
             my_rights=data.get("myRights", {}),
             sort_order=data.get("sortOrder", 0),
             is_visible=data.get("isVisible", True),
+            time_zone=data.get("timeZone"),
+            share_with=data.get("shareWith"),
+            default_alerts_with_time=data.get("defaultAlertsWithTime"),
+            default_alerts_without_time=data.get("defaultAlertsWithoutTime"),
         )
 
     def to_jmap(self) -> dict:
         """Serialise to a JMAP Calendar JSON dict for ``Calendar/set``.
 
-        ``id`` and ``myRights`` are intentionally excluded — both are
+        ``id`` and ``myRights`` are intentionally excluded, both are
         server-set and must not appear in create or update payloads.
         Optional fields are included only when they hold a non-default value.
         """
@@ -129,6 +160,14 @@ class JMAPCalendar(Generic[_M]):
             d["description"] = self.description
         if self.color is not None:
             d["color"] = self.color
+        if self.time_zone is not None:
+            d["timeZone"] = self.time_zone
+        if self.share_with is not None:
+            d["shareWith"] = self.share_with
+        if self.default_alerts_with_time is not None:
+            d["defaultAlertsWithTime"] = self.default_alerts_with_time
+        if self.default_alerts_without_time is not None:
+            d["defaultAlertsWithoutTime"] = self.default_alerts_without_time
         return d
 
     @overload
@@ -172,6 +211,7 @@ class JMAPCalendar(Generic[_M]):
             end=end,
             text=searchargs.get("text"),
             parent=self,
+            account_id=self._account_id,
         )
 
     async def _async_search(
@@ -189,6 +229,7 @@ class JMAPCalendar(Generic[_M]):
             end=end,
             text=searchargs.get("text"),
             parent=self,
+            account_id=self._account_id,
         )
 
     @overload
@@ -219,13 +260,15 @@ class JMAPCalendar(Generic[_M]):
         """
         if self._is_async:
             return self._async_get_object_by_uid(uid)
-        return self._bound_client._get_object_by_uid(uid, calendar_id=self.id, parent=self)
+        return self._bound_client._get_object_by_uid(
+            uid, calendar_id=self.id, parent=self, account_id=self._account_id
+        )
 
     async def _async_get_object_by_uid(
         self: JMAPCalendar[Literal[True]], uid: str
     ) -> JMAPCalendarObject:
         return await self._bound_async_client._get_object_by_uid(
-            uid, calendar_id=self.id, parent=self
+            uid, calendar_id=self.id, parent=self, account_id=self._account_id
         )
 
     @overload
@@ -252,7 +295,9 @@ class JMAPCalendar(Generic[_M]):
         """
         if self._is_async:
             return self._async_add_event(ical_str)
-        return self._bound_client.create_event(self.id, ical_str)
+        return self._bound_client.create_event(self.id, ical_str, account_id=self._account_id)
 
     async def _async_add_event(self: JMAPCalendar[Literal[True]], ical_str: str) -> str:
-        return await self._bound_async_client.create_event(self.id, ical_str)
+        return await self._bound_async_client.create_event(
+            self.id, ical_str, account_id=self._account_id
+        )

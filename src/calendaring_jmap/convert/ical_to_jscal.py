@@ -387,6 +387,17 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
 
     jscal: dict = {
         "@type": "Event",
+        # RFC 8984 itself has no "version" property; draft-ietf-calext-
+        # jscalendarbis (the 2.0 successor spec) adds it and registers "1.0"
+        # for data conforming to RFC 8984, "2.0" for jscalendarbis. This
+        # conversion does not emit any 2.0-only properties (COORDINATES,
+        # SHOW-WITHOUT-TIME), so "1.0" would be the strictly accurate value.
+        # We send "2.0" anyway: Cyrus's current test image rejects "1.0"
+        # outright (requires "2.0" on every Event), and this repo's own CI
+        # and integration tests run against that same image. Revisit once M4
+        # adds real jscalendarbis support, or once older servers matter more
+        # than this one.
+        "version": "2.0",
         "uid": uid,
         "title": title,
         "start": start,
