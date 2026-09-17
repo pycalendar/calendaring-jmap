@@ -49,7 +49,7 @@ if USE_NIQUESTS:
     ## the requests branch and flip USE_NIQUESTS off on an install that does
     ## have niquests. Only the async client needs this.
     try:
-        from niquests import AsyncSession
+        from niquests import AsyncSession  # type: ignore[no-redef]
     except ImportError:
         ## Old niquests without AsyncSession: leave it None, and let
         ## require_async_session() explain it if anything asks for it.

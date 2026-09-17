@@ -61,7 +61,7 @@ def _prop_date_or_datetime(prop) -> datetime | date:
     result for callers that need a concrete date/datetime to operate on.
     """
     dt = getattr(prop, "dt", None)
-    if not isinstance(dt, (datetime, date)):
+    if not isinstance(dt, datetime | date):
         raise ValueError(f"Expected a date or datetime property value, got {dt!r}")
     return dt
 
