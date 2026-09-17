@@ -107,4 +107,6 @@ class JMAPCalendarObject:
             if self._ical_cache is not None
             else jscal_to_ical(self.data)
         )
-        self.parent._bound_client.update_event(self.id, ical_str)
+        self.parent._bound_client.update_event(
+            self.id, ical_str, account_id=self.parent._account_id
+        )

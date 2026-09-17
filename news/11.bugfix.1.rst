@@ -1,0 +1,1 @@
+``ical_to_jscal`` now emits a ``version`` property on every ``Event`` object. Cyrus requires it and rejected every event without one; ``create_event``/``update_event`` failed with ``invalidProperties: ["version"]`` on any current Cyrus build.

@@ -31,13 +31,20 @@ else:
     ## fallback - so this raises if niquests is absent.
     AsyncSession = require_async_session()
 
-from calendaring_jmap._methods.calendar import build_calendar_get
+from calendaring_jmap._methods.calendar import (
+    build_calendar_get,
+    build_calendar_set_create,
+    build_calendar_set_destroy,
+    build_calendar_set_update,
+    parse_calendar_set,
+)
 from calendaring_jmap._methods.event import (
     build_event_changes,
     build_event_get,
     build_event_set_create,
     build_event_set_destroy,
     build_event_set_update,
+    parse_event_set,
 )
 from calendaring_jmap._methods.task import (
     build_task_get,
@@ -45,6 +52,7 @@ from calendaring_jmap._methods.task import (
     build_task_set_create,
     build_task_set_destroy,
     build_task_set_update,
+    parse_task_set,
 )
 from calendaring_jmap.client import _DEFAULT_USING, _TASK_USING, _JMAPClientBase
 from calendaring_jmap.convert import ical_to_jscal
@@ -194,22 +202,223 @@ class AsyncJMAPClient(_JMAPClientBase):
 
         return method_responses
 
-    async def get_calendars(self) -> list[JMAPCalendar[Literal[True]]]:
-        """Fetch all calendars for the authenticated account.
+    async def get_calendars(
+        self, account_id: str | None = None
+    ) -> list[JMAPCalendar[Literal[True]]]:
+        """Fetch all calendars for an account.
+
+        Args:
+            account_id: The JMAP account to query. Defaults to the
+                authenticated user's own primary account. Pass a different
+                account here to browse calendars another user has shared with
+                you, once ``share_calendar`` has granted access; the session
+                only lists accounts you can actually reach (see
+                ``Session.raw["accounts"]``).
 
         Returns:
             List of :class:`~calendaring_jmap.objects.calendar.JMAPCalendar` objects.
         """
         session = await self._get_session()
-        responses = await self._request([build_calendar_get(session.account_id)])
-        return self._parse_get_calendars(responses, self, True)
+        target_account = account_id if account_id is not None else session.account_id
+        responses = await self._request([build_calendar_get(target_account)])
+        return self._parse_get_calendars(responses, self, True, account_id=target_account)
 
-    async def create_event(self, calendar_id: str, ical_str: str) -> str:
+    async def create_calendar(
+        self,
+        name: str,
+        color: str | None = None,
+        timezone: str | None = None,
+    ) -> str:
+        """Create a calendar.
+
+        Returns:
+            The server-assigned JMAP calendar ID.
+
+        Raises:
+            JMAPMethodError: If the server rejects the create request.
+        """
+        session = await self._get_session()
+        cal: dict = {"name": name}
+        if color is not None:
+            cal["color"] = color
+        if timezone is not None:
+            cal["timeZone"] = timezone
+        call = build_calendar_set_create(session.account_id, {"new-0": cal})
+        responses = await self._request([call])
+        return self._parse_create_response(
+            responses, session.api_url, "Calendar/set", parse_calendar_set
+        )
+
+    async def _update_calendar_patch(
+        self, calendar_id: str, patch: dict, account_id: str | None = None
+    ) -> None:
+        session = await self._get_session()
+        target_account = account_id if account_id is not None else session.account_id
+        call = build_calendar_set_update(target_account, {calendar_id: patch})
+        responses = await self._request([call])
+        self._parse_update_response(
+            responses, session.api_url, "Calendar/set", parse_calendar_set, calendar_id
+        )
+
+    async def update_calendar(
+        self,
+        calendar_id: str,
+        name: str | None = None,
+        color: str | None = None,
+        timezone: str | None = None,
+        account_id: str | None = None,
+    ) -> None:
+        """Update a calendar's name, color, or time zone.
+
+        ``name``, ``color``, and ``timeZone`` are per-user properties (JMAP
+        Calendars §4.3). Called by the calendar's owner, this changes the
+        value for everyone until a sharee sets their own override. Called by
+        a sharee, it only ever changes that sharee's own view; it can never
+        rename or recolor the calendar for the owner or anyone else it is
+        shared with.
+
+        Args:
+            account_id: The JMAP account owning ``calendar_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to update a calendar shared with you.
+
+        Raises:
+            JMAPMethodError: If the server rejects the update.
+        """
+        patch: dict = {}
+        if name is not None:
+            patch["name"] = name
+        if color is not None:
+            patch["color"] = color
+        if timezone is not None:
+            patch["timeZone"] = timezone
+        await self._update_calendar_patch(calendar_id, patch, account_id=account_id)
+
+    async def delete_calendar(
+        self,
+        calendar_id: str,
+        on_destroy_remove_events: bool = False,
+        account_id: str | None = None,
+    ) -> None:
+        """Delete a calendar.
+
+        Args:
+            calendar_id: The JMAP calendar ID to delete.
+            on_destroy_remove_events: If ``False`` (the default), deleting a
+                calendar that still has events fails with a
+                ``calendarHasEvent`` error instead of deleting anything. Pass
+                ``True`` to remove those events along with the calendar.
+            account_id: The JMAP account owning ``calendar_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to delete a calendar shared with you.
+
+        Raises:
+            JMAPMethodError: If the server rejects the delete. ``error_type``
+                is ``"calendarHasEvent"`` when the calendar still has events
+                and ``on_destroy_remove_events`` was left ``False``.
+        """
+        session = await self._get_session()
+        target_account = account_id if account_id is not None else session.account_id
+        call = build_calendar_set_destroy(target_account, [calendar_id], on_destroy_remove_events)
+        responses = await self._request([call])
+        self._parse_delete_response(
+            responses, session.api_url, "Calendar/set", parse_calendar_set, calendar_id
+        )
+
+    async def share_calendar(
+        self,
+        calendar_id: str,
+        account_id: str,
+        rights: dict,
+        owning_account_id: str | None = None,
+    ) -> None:
+        """Share a calendar with another account.
+
+        ``account_id`` must already be a resolved JMAP Principal ID, not an
+        email address. This client has no ``Principal/query``/``Principal/get``
+        support yet (RFC 9670), so resolving an email address to a Principal
+        ID is left to the caller.
+
+        Replaces ``account_id``'s entry in the calendar's ``shareWith`` map
+        wholesale; other accounts already sharing the calendar are left
+        untouched. ``rights`` itself is not merged with any rights that
+        account already had, so granting an additional right to an account
+        that is already shared with needs the full rights dict, not just the
+        new key. Requires the caller to already hold the ``mayShare`` right,
+        and cannot grant a right the caller does not themselves hold.
+
+        Args:
+            account_id: The account to grant rights to.
+            rights: Dict of right names to bool, e.g. ``{"mayReadItems": True}``.
+                Replaces any rights this account already had on this calendar.
+            owning_account_id: The JMAP account owning ``calendar_id``.
+                Defaults to the authenticated user's own primary account;
+                pass the owner's account here to re-share a calendar that
+                was itself shared with you (if you hold ``mayShare`` on it).
+
+        Raises:
+            JMAPMethodError: If the server rejects the update, for example
+                with ``forbidden`` when the caller lacks ``mayShare``.
+        """
+        await self._update_calendar_patch(
+            calendar_id, {f"shareWith/{account_id}": rights}, account_id=owning_account_id
+        )
+
+    async def get_calendar_subscriptions(self) -> list[JMAPCalendar[Literal[True]]]:
+        """Fetch the calendars the authenticated account is subscribed to.
+
+        JMAP Calendars has no separate subscription object; this is
+        ``get_calendars()`` filtered to ``is_subscribed``.
+
+        Returns:
+            List of :class:`~calendaring_jmap.objects.calendar.JMAPCalendar`
+            objects with ``is_subscribed`` set.
+        """
+        calendars = await self.get_calendars()
+        return [cal for cal in calendars if cal.is_subscribed]
+
+    async def set_default_alerts(
+        self,
+        calendar_id: str,
+        alerts_with_time: dict | None = None,
+        alerts_without_time: dict | None = None,
+        account_id: str | None = None,
+    ) -> None:
+        """Set a calendar's default alerts for new events.
+
+        ``alerts_with_time`` applies to timed events, ``alerts_without_time``
+        to all-day events (JMAP Calendars §4). Each is a map of alert ID to
+        Alert dict (RFC 8984 §4.5.2). Pass ``None`` to leave a property
+        unchanged; pass ``{}`` to clear it.
+
+        Args:
+            account_id: The JMAP account owning ``calendar_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to set default alerts on a calendar
+                shared with you.
+
+        Raises:
+            JMAPMethodError: If the server rejects the update.
+        """
+        patch: dict = {}
+        if alerts_with_time is not None:
+            patch["defaultAlertsWithTime"] = alerts_with_time
+        if alerts_without_time is not None:
+            patch["defaultAlertsWithoutTime"] = alerts_without_time
+        await self._update_calendar_patch(calendar_id, patch, account_id=account_id)
+
+    async def create_event(
+        self, calendar_id: str, ical_str: str, account_id: str | None = None
+    ) -> str:
         """Create a calendar event from an iCalendar string.
 
         Args:
             calendar_id: The JMAP calendar ID to create the event in.
             ical_str: A VCALENDAR string representing the event.
+            account_id: The JMAP account owning ``calendar_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to add an event to a calendar shared
+                with you (see ``get_calendars(account_id=...)``).
 
         Returns:
             The server-assigned JMAP event ID.
@@ -219,9 +428,12 @@ class AsyncJMAPClient(_JMAPClientBase):
         """
         session = await self._get_session()
         jscal = ical_to_jscal(ical_str, calendar_id=calendar_id)
-        call = build_event_set_create(session.account_id, {"new-0": jscal})
+        target_account = account_id if account_id is not None else session.account_id
+        call = build_event_set_create(target_account, {"new-0": jscal})
         responses = await self._request([call])
-        return self._parse_create_event_response(responses, session.api_url)
+        return self._parse_create_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set
+        )
 
     async def get_event(self, event_id: str) -> JMAPCalendarObject:
         """Fetch a calendar event as an iCalendar string.
@@ -242,28 +454,37 @@ class AsyncJMAPClient(_JMAPClientBase):
         responses = await self._request([build_event_get(session.account_id, ids=[event_id])])
         return self._parse_get_event_response(responses, session.api_url, event_id)
 
-    async def update_event(self, event_id: str, ical_str: str) -> None:
+    async def update_event(
+        self, event_id: str, ical_str: str, account_id: str | None = None
+    ) -> None:
         """Update a calendar event from an iCalendar string.
 
         Args:
             event_id: The JMAP event ID to update.
             ical_str: A VCALENDAR string with the updated event data.
+            account_id: The JMAP account owning ``event_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to update an event on a calendar
+                shared with you.
 
         Raises:
             JMAPMethodError: If the server rejects the update.
         """
         session = await self._get_session()
+        target_account = account_id if account_id is not None else session.account_id
         patch, nulled = self._build_event_update_patch(ical_str)
         while True:
             responses = await self._request(
-                [build_event_set_update(session.account_id, {event_id: patch})]
+                [build_event_set_update(target_account, {event_id: patch})]
             )
             drop = self._unsupported_null_keys(responses, event_id, patch, nulled)
             if not drop:
                 break
             for key in drop:
                 patch.pop(key, None)
-        self._parse_update_event_response(responses, session.api_url, event_id)
+        self._parse_update_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set, event_id
+        )
 
     async def _search(
         self,
@@ -272,9 +493,16 @@ class AsyncJMAPClient(_JMAPClientBase):
         end: str | None = None,
         text: str | None = None,
         parent: JMAPCalendar | None = None,
+        account_id: str | None = None,
     ) -> list[JMAPCalendarObject]:
         session = await self._get_session()
-        calls = self._build_event_search_calls(session.account_id, calendar_id, start, end, text)
+        calls = self._build_event_search_calls(
+            account_id if account_id is not None else session.account_id,
+            calendar_id,
+            start,
+            end,
+            text,
+        )
         responses = await self._request(calls)
         return self._parse_search_response(responses, parent)
 
@@ -284,6 +512,7 @@ class AsyncJMAPClient(_JMAPClientBase):
         start: str | None = None,
         end: str | None = None,
         text: str | None = None,
+        account_id: str | None = None,
     ) -> list[JMAPCalendarObject]:
         """Search for calendar events.
 
@@ -296,13 +525,18 @@ class AsyncJMAPClient(_JMAPClientBase):
             start: Only events ending after this datetime (``YYYY-MM-DDTHH:MM:SS``).
             end: Only events starting before this datetime (``YYYY-MM-DDTHH:MM:SS``).
             text: Free-text search across title, description, locations, and participants.
+            account_id: The JMAP account to search. Defaults to the
+                authenticated user's own primary account; pass a different
+                account here to search a calendar shared with you.
 
         Returns:
             List of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
             instances.  ``parent`` is ``None`` on these objects; use
             :meth:`JMAPCalendar.search` if you need ``parent`` set.
         """
-        return await self._search(calendar_id=calendar_id, start=start, end=end, text=text)
+        return await self._search(
+            calendar_id=calendar_id, start=start, end=end, text=text, account_id=account_id
+        )
 
     async def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.
@@ -357,24 +591,36 @@ class AsyncJMAPClient(_JMAPClientBase):
             get_responses, created_ids, updated_ids, destroyed, new_sync_token
         )
 
-    async def delete_event(self, event_id: str) -> None:
+    async def delete_event(self, event_id: str, account_id: str | None = None) -> None:
         """Delete a calendar event.
 
         Args:
             event_id: The JMAP event ID to delete.
+            account_id: The JMAP account owning ``event_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to delete an event on a calendar
+                shared with you.
 
         Raises:
             JMAPMethodError: If the server rejects the delete.
         """
         session = await self._get_session()
-        responses = await self._request([build_event_set_destroy(session.account_id, [event_id])])
-        self._parse_delete_event_response(responses, session.api_url, event_id)
+        target_account = account_id if account_id is not None else session.account_id
+        responses = await self._request([build_event_set_destroy(target_account, [event_id])])
+        self._parse_delete_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set, event_id
+        )
 
     async def _get_object_by_uid(
-        self, uid: str, calendar_id: str | None = None, parent: JMAPCalendar | None = None
+        self,
+        uid: str,
+        calendar_id: str | None = None,
+        parent: JMAPCalendar | None = None,
+        account_id: str | None = None,
     ) -> JMAPCalendarObject:
         # RFC 8984 FilterCondition has no uid field; UID matching is done client-side.
-        for obj in await self._search(calendar_id=calendar_id, parent=parent):
+        results = await self._search(calendar_id=calendar_id, parent=parent, account_id=account_id)
+        for obj in results:
             if obj.data.get("uid") == uid:
                 return obj
         session = await self._get_session()
@@ -423,7 +669,7 @@ class AsyncJMAPClient(_JMAPClientBase):
         task_dict.update(kwargs)
         call = build_task_set_create(session.account_id, {"new-0": task_dict})
         responses = await self._request([call], using=_TASK_USING)
-        return self._parse_create_task_response(responses, session.api_url)
+        return self._parse_create_response(responses, session.api_url, "Task/set", parse_task_set)
 
     async def get_task(self, task_id: str) -> dict:
         """Fetch a task by ID.
@@ -456,7 +702,7 @@ class AsyncJMAPClient(_JMAPClientBase):
         session = await self._get_session()
         call = build_task_set_update(session.account_id, {task_id: patch})
         responses = await self._request([call], using=_TASK_USING)
-        self._parse_update_task_response(responses, session.api_url, task_id)
+        self._parse_update_response(responses, session.api_url, "Task/set", parse_task_set, task_id)
 
     async def delete_task(self, task_id: str) -> None:
         """Delete a task.
@@ -471,4 +717,4 @@ class AsyncJMAPClient(_JMAPClientBase):
         responses = await self._request(
             [build_task_set_destroy(session.account_id, [task_id])], using=_TASK_USING
         )
-        self._parse_delete_task_response(responses, session.api_url, task_id)
+        self._parse_delete_response(responses, session.api_url, "Task/set", parse_task_set, task_id)
