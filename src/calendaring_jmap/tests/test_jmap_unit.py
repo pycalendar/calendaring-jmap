@@ -2126,6 +2126,26 @@ class TestIcalToJscal:
         assert attendee["calendarAddress"] == "sip:alice@example.com"
         assert "email" not in attendee
 
+    def test_bare_attendee_address_without_scheme_is_treated_as_email(self):
+        # CAL-ADDRESS is technically required to be a URI, but some
+        # real-world calendar data omits the mailto: scheme entirely.
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\nATTENDEE:alice@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        attendee = next(iter(result["participants"].values()))
+        assert attendee["calendarAddress"] == "mailto:alice@example.com"
+        assert attendee["email"] == "alice@example.com"
+
+    def test_non_mailto_organizer_keeps_calendar_address_without_fake_email(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\nORGANIZER:sip:bob@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        organizer = next(iter(result["participants"].values()))
+        assert organizer["calendarAddress"] == "sip:bob@example.com"
+        assert "email" not in organizer
+
     def test_calendar_id_set(self):
         ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:Cal Event\r\n")
         result = ical_to_jscal(ical, calendar_id="Default")
