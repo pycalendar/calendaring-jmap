@@ -51,6 +51,10 @@ STALWART_USERNAME_2 = "user1@example.org"
 STALWART_PASSWORD_2 = "caldavtest1"
 STALWART_PASSWORD = "testcaldav"
 
+# Rights a scheduling test's second account needs on a shared calendar: read
+# and write the events, plus mayRSVP to update its own participationStatus.
+_SCHEDULING_RIGHTS = {"mayReadItems": True, "mayWriteAll": True, "mayRSVP": True}
+
 
 def _reachable(host: str, port: int) -> bool:
     try:
@@ -87,6 +91,32 @@ def _minimal_ical(title: str = "Test Event", start: datetime | None = None) -> s
         f"SUMMARY:{title}\r\n"
         f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
         f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+
+def _invite_ical(
+    organizer_email: str,
+    attendee_email: str,
+    title: str = "Scheduling Test Event",
+    start: datetime | None = None,
+) -> str:
+    if start is None:
+        start = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=1)
+    uid = str(uuid.uuid4())
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//test//test//EN\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        f"SUMMARY:{title}\r\n"
+        f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"ORGANIZER:mailto:{organizer_email}\r\n"
+        f"ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{attendee_email}\r\n"
         "END:VEVENT\r\n"
         "END:VCALENDAR\r\n"
     )
@@ -281,6 +311,18 @@ def owner_account_id(server):
     return session.account_id
 
 
+@pytest.fixture
+def owner_email(server):
+    """The email address to put in ORGANIZER for calendar_management_client's own account."""
+    return CYRUS_USERNAME + "@example.com" if server == "cyrus" else STALWART_USERNAME
+
+
+@pytest.fixture
+def second_account_email(server):
+    """The email address to put in ATTENDEE, and pass as own_email, for second_account_client."""
+    return CYRUS_USERNAME_2 + "@example.com" if server == "cyrus" else STALWART_USERNAME_2
+
+
 @_sync_servers
 class TestJMAPCalendarManagementIntegration:
     def test_create_update_delete_calendar(self, calendar_management_client):
@@ -457,6 +499,222 @@ class TestJMAPCalendarManagementIntegration:
             calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
 
 
+@_sync_servers
+class TestJMAPSchedulingIntegration:
+    """Being invited to an event does not by itself grant account access to
+    the invitee (confirmed live: an invited-but-not-shared participant gets
+    accountNotFound browsing the organizer's account). Every test here
+    shares the calendar first, the same prerequisite #11's cross-account
+    tests already establish, then exercises the scheduling methods on top."""
+
+    def test_send_invite_and_accept(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        owner_email,
+        second_account_email,
+        server,
+    ):
+        cal_id = calendar_management_client.create_calendar("Scheduling Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(cal_id, second_account_id, _SCHEDULING_RIGHTS)
+            ical = _invite_ical(owner_email, second_account_email, title="Accept Me")
+            event_id = calendar_management_client.send_invite(cal_id, ical)
+
+            second_account_client.accept_invitation(
+                event_id, second_account_email, account_id=owner_account_id
+            )
+
+            updated = calendar_management_client.get_event(event_id)
+            attendee = next(
+                p
+                for p in updated.get_data()["participants"].values()
+                if p.get("email") == second_account_email
+            )
+            assert attendee["participationStatus"] == "accepted", (
+                f"{server}: accept_invitation did not update participationStatus "
+                f"on the organizer's own copy of the event."
+            )
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_decline_invitation(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        owner_email,
+        second_account_email,
+        server,
+    ):
+        cal_id = calendar_management_client.create_calendar("Decline Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(cal_id, second_account_id, _SCHEDULING_RIGHTS)
+            ical = _invite_ical(owner_email, second_account_email, title="Decline Me")
+            event_id = calendar_management_client.send_invite(cal_id, ical)
+
+            second_account_client.decline_invitation(
+                event_id, second_account_email, account_id=owner_account_id
+            )
+
+            updated = calendar_management_client.get_event(event_id)
+            attendee = next(
+                p
+                for p in updated.get_data()["participants"].values()
+                if p.get("email") == second_account_email
+            )
+            assert attendee["participationStatus"] == "declined"
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_tentatively_accept_invitation(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        owner_email,
+        second_account_email,
+        server,
+    ):
+        cal_id = calendar_management_client.create_calendar("Tentative Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(cal_id, second_account_id, _SCHEDULING_RIGHTS)
+            ical = _invite_ical(owner_email, second_account_email, title="Maybe Me")
+            event_id = calendar_management_client.send_invite(cal_id, ical)
+
+            second_account_client.tentatively_accept(
+                event_id, second_account_email, account_id=owner_account_id
+            )
+
+            updated = calendar_management_client.get_event(event_id)
+            attendee = next(
+                p
+                for p in updated.get_data()["participants"].values()
+                if p.get("email") == second_account_email
+            )
+            assert attendee["participationStatus"] == "tentative"
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_accept_invitation_raises_when_own_email_not_a_participant(
+        self, calendar_management_client, server
+    ):
+        cal_id = calendar_management_client.create_calendar("No Participant Calendar")
+        try:
+            event_id = calendar_management_client.create_event(cal_id, _minimal_ical("Solo Event"))
+            with pytest.raises(JMAPMethodError) as exc_info:
+                calendar_management_client.accept_invitation(event_id, "nobody@example.invalid")
+            assert exc_info.value.error_type == "notFound"
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_cancellation_from_organizer_removes_event_for_participant(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        owner_email,
+        second_account_email,
+        server,
+    ):
+        """delete_event with send_scheduling_messages requests a CANCEL per
+        JMAP Calendars §5.9.2.2; the client has no way to inspect iMIP
+        delivery directly, so the observable assertion is that the event is
+        actually gone from the organizer's own account after cancellation."""
+        cal_id = calendar_management_client.create_calendar("Cancellation Integration Calendar")
+        try:
+            calendar_management_client.share_calendar(cal_id, second_account_id, _SCHEDULING_RIGHTS)
+            ical = _invite_ical(owner_email, second_account_email, title="Cancel Me")
+            event_id = calendar_management_client.send_invite(cal_id, ical)
+            second_account_client.accept_invitation(
+                event_id, second_account_email, account_id=owner_account_id
+            )
+
+            calendar_management_client.delete_event(event_id, send_scheduling_messages=True)
+
+            with pytest.raises(JMAPMethodError):
+                calendar_management_client.get_event(event_id)
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_no_counter_proposal_mechanism(
+        self,
+        calendar_management_client,
+        second_account_client,
+        second_account_id,
+        owner_account_id,
+        owner_email,
+        second_account_email,
+        server,
+    ):
+        """Neither RFC 8984 nor draft-ietf-jmap-calendars-29 define an iTIP
+        COUNTER equivalent (confirmed: no "counter" occurrence in either
+        spec text). A non-origin participant has no dedicated method to
+        propose a new time; this proves what the two test servers actually
+        do with a direct start/duration update from that account, so the
+        absence of a counter_propose() method here is a confirmed protocol
+        gap rather than an unimplemented one."""
+        cal_id = calendar_management_client.create_calendar("Counter Proposal Calendar")
+        try:
+            calendar_management_client.share_calendar(cal_id, second_account_id, _SCHEDULING_RIGHTS)
+            ical = _invite_ical(owner_email, second_account_email, title="Propose New Time")
+            event_id = calendar_management_client.send_invite(cal_id, ical)
+            second_account_client.accept_invitation(
+                event_id, second_account_email, account_id=owner_account_id
+            )
+
+            proposed = _invite_ical(
+                owner_email,
+                second_account_email,
+                title="Propose New Time",
+                start=datetime(2030, 6, 1, 15, 0, tzinfo=timezone.utc),
+            )
+            second_account_client.update_event(event_id, proposed, account_id=owner_account_id)
+
+            updated = calendar_management_client.get_event(event_id)
+            assert updated.get_data()["start"] == "2030-06-01T15:00:00", (
+                f"{server}: a non-origin participant's direct start update was not applied "
+                "as a plain write; no distinct counter-proposal semantics exist to test."
+            )
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+    def test_sequence_increments_on_substantive_update(self, calendar_management_client, server):
+        """JMAP Calendars §5.9: the server MUST increment sequence when a
+        non-per-user property changes and the account is the event's
+        origin. The client never sets sequence itself; this proves the
+        server does, rather than assuming it from the spec text alone.
+        Confirmed live: Cyrus does this; Stalwart does not touch sequence
+        on update at all, a real spec deviation, not a test bug."""
+        if server == "stalwart":
+            pytest.skip("Stalwart does not increment sequence on CalendarEvent/set update")
+        cal_id = calendar_management_client.create_calendar("Sequence Integration Calendar")
+        try:
+            event_id = calendar_management_client.create_event(
+                cal_id, _minimal_ical("Sequence Start")
+            )
+            before = calendar_management_client.get_event(event_id)
+            sequence_before = before.get_data().get("sequence", 0)
+
+            calendar_management_client.update_event(
+                event_id, _minimal_ical("Sequence Changed Title")
+            )
+
+            after = calendar_management_client.get_event(event_id)
+            sequence_after = after.get_data().get("sequence", 0)
+            assert sequence_after > sequence_before, (
+                f"{server}: sequence did not increment after a substantive "
+                f"update ({sequence_before} -> {sequence_after})."
+            )
+        finally:
+            calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
+
+
 @pytest.fixture
 def event_client(request, server):
     return request.getfixturevalue("client" if server == "cyrus" else "stalwart_client")
@@ -515,6 +773,36 @@ class TestJMAPEventIntegration:
                 token_before
             )
             assert any("Sync Test Event" in jscal_to_ical(a.get_data()) for a in added)
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_recurring_event_create_get_update(self, event_client, event_calendar_id, server):
+        """Neither test server accepts RFC 8984's recurrenceRules array; both
+        want the singular recurrenceRule instead (see ical_to_jscal.py). This
+        is the only integration coverage for recurring events at all."""
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\n"
+            f"BEGIN:VEVENT\r\nUID:{uuid.uuid4()}\r\n"
+            "SUMMARY:Weekly Standup\r\n"
+            "DTSTART:20260701T100000Z\r\nDTEND:20260701T110000Z\r\n"
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            obj = event_client.get_event(event_id)
+            assert "recurrenceRule" in obj.get_data(), (
+                f"{server}: created event lost its recurrence rule on read-back."
+            )
+            assert "RRULE" in jscal_to_ical(obj.get_data())
+
+            updated_ical = ical.replace("Weekly Standup", "Weekly Standup Renamed")
+            event_client.update_event(event_id, updated_ical)
+            updated = event_client.get_event(event_id)
+            assert "recurrenceRule" in updated.get_data(), (
+                f"{server}: recurrence rule was lost after an unrelated update."
+            )
+            assert "Weekly Standup Renamed" in jscal_to_ical(updated.get_data())
         finally:
             event_client.delete_event(event_id)
 

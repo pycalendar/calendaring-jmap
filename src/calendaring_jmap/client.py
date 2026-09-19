@@ -46,7 +46,14 @@ from calendaring_jmap._methods.task import (
     parse_task_list_get,
     parse_task_set,
 )
-from calendaring_jmap.constants import CALENDAR_CAPABILITY, CORE_CAPABILITY, TASK_CAPABILITY
+from calendaring_jmap.constants import (
+    CALENDAR_CAPABILITY,
+    CORE_CAPABILITY,
+    PARTICIPATION_STATUS_ACCEPTED,
+    PARTICIPATION_STATUS_DECLINED,
+    PARTICIPATION_STATUS_TENTATIVE,
+    TASK_CAPABILITY,
+)
 from calendaring_jmap.convert import ical_to_jscal
 from calendaring_jmap.convert._patch import _NULL_FOR_UPDATE
 from calendaring_jmap.error import JMAPAuthError, JMAPMethodError
@@ -128,6 +135,11 @@ class _JMAPClientBase:
             )
 
     @staticmethod
+    def _resolve_account(session: Session, account_id: str | None) -> str:
+        """Return ``account_id``, or ``session.account_id`` when it is ``None``."""
+        return account_id if account_id is not None else session.account_id
+
+    @staticmethod
     def _raise_set_error(api_url: str, err: dict) -> None:
         raise JMAPMethodError(
             url=api_url,
@@ -197,7 +209,7 @@ class _JMAPClientBase:
         """Detect an update that failed *only* because the server rejects
         null-clearing of properties it does not support.
 
-        Some servers (e.g. Stalwart for ``recurrenceRules``) reject a property
+        Some servers (e.g. Stalwart for ``recurrenceRule``) reject a property
         outright in ``CalendarEvent/set``, even when it is being set to ``null``.
         Nulling such a property is harmless cleanup — it was absent from the new
         iCalendar — so we report it as droppable, letting the caller retry the
@@ -301,6 +313,39 @@ class _JMAPClientBase:
                     _JMAPClientBase._raise_set_error(api_url, not_destroyed[object_id])
                 return
         raise JMAPMethodError(url=api_url, reason=f"No {set_method} response")
+
+    @staticmethod
+    def _find_participant_id_by_email(
+        participants: dict, own_email: str, api_url: str, event_id: str
+    ) -> str:
+        """Return the id of the entry in ``participants`` whose email is ``own_email``.
+
+        Matching is a case-insensitive comparison against each participant's
+        ``email`` property, falling back to ``calendarAddress`` (stripping a
+        leading ``mailto:``) for a participant with no ``email`` set. JMAP
+        Calendars itself matches by ``ParticipantIdentity.calendarAddress``,
+        a mechanism this client does not implement (see ``share_calendar``'s
+        docstring for the related Principal-id limitation); this fallback
+        covers a spec-compliant server, or another client's participant,
+        that only ever set ``calendarAddress``.
+
+        Shared by :meth:`JMAPClient._find_own_participant_id` and
+        :meth:`AsyncJMAPClient._find_own_participant_id`.
+
+        Raises:
+            JMAPMethodError: If no participant matches ``own_email``.
+        """
+        target = own_email.lower()
+        for participant_id, participant in participants.items():
+            email = participant.get("email") or participant.get("calendarAddress") or ""
+            email = email.removeprefix("mailto:")
+            if email.lower() == target:
+                return participant_id
+        raise JMAPMethodError(
+            url=api_url,
+            reason=f"No participant matching {own_email!r} on event {event_id!r}",
+            error_type="notFound",
+        )
 
     @staticmethod
     def _parse_get_event_response(
@@ -539,7 +584,7 @@ class JMAPClient(_JMAPClientBase):
             List of :class:`~calendaring_jmap.objects.calendar.JMAPCalendar` objects.
         """
         session = self._get_session()
-        target_account = account_id if account_id is not None else session.account_id
+        target_account = self._resolve_account(session, account_id)
         responses = self._request([build_calendar_get(target_account)])
         return self._parse_get_calendars(responses, self, False, account_id=target_account)
 
@@ -573,7 +618,7 @@ class JMAPClient(_JMAPClientBase):
         self, calendar_id: str, patch: dict, account_id: str | None = None
     ) -> None:
         session = self._get_session()
-        target_account = account_id if account_id is not None else session.account_id
+        target_account = self._resolve_account(session, account_id)
         call = build_calendar_set_update(target_account, {calendar_id: patch})
         responses = self._request([call])
         self._parse_update_response(
@@ -638,7 +683,7 @@ class JMAPClient(_JMAPClientBase):
                 and ``on_destroy_remove_events`` was left ``False``.
         """
         session = self._get_session()
-        target_account = account_id if account_id is not None else session.account_id
+        target_account = self._resolve_account(session, account_id)
         call = build_calendar_set_destroy(target_account, [calendar_id], on_destroy_remove_events)
         responses = self._request([call])
         self._parse_delete_response(
@@ -726,6 +771,24 @@ class JMAPClient(_JMAPClientBase):
             patch["defaultAlertsWithoutTime"] = alerts_without_time
         self._update_calendar_patch(calendar_id, patch, account_id=account_id)
 
+    def _create_event_impl(
+        self,
+        calendar_id: str,
+        ical_str: str,
+        account_id: str | None,
+        send_scheduling_messages: bool,
+    ) -> str:
+        session = self._get_session()
+        jscal = ical_to_jscal(ical_str, calendar_id=calendar_id)
+        target_account = self._resolve_account(session, account_id)
+        call = build_event_set_create(
+            target_account, {"new-0": jscal}, send_scheduling_messages=send_scheduling_messages
+        )
+        responses = self._request([call])
+        return self._parse_create_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set
+        )
+
     def create_event(self, calendar_id: str, ical_str: str, account_id: str | None = None) -> str:
         """Create a calendar event from an iCalendar string.
 
@@ -743,20 +806,46 @@ class JMAPClient(_JMAPClientBase):
         Raises:
             JMAPMethodError: If the server rejects the create request.
         """
-        session = self._get_session()
-        jscal = ical_to_jscal(ical_str, calendar_id=calendar_id)
-        target_account = account_id if account_id is not None else session.account_id
-        call = build_event_set_create(target_account, {"new-0": jscal})
-        responses = self._request([call])
-        return self._parse_create_response(
-            responses, session.api_url, "CalendarEvent/set", parse_event_set
+        return self._create_event_impl(
+            calendar_id, ical_str, account_id, send_scheduling_messages=False
         )
 
-    def get_event(self, event_id: str) -> JMAPCalendarObject:
+    def send_invite(self, calendar_id: str, ical_str: str, account_id: str | None = None) -> str:
+        """Create a calendar event and notify its participants.
+
+        Identical to :meth:`create_event`, except the server actually
+        dispatches iTIP invitations to the event's participants (an iCalendar
+        string with ATTENDEE/ORGANIZER properties). ``create_event`` itself
+        never sends scheduling messages; use this instead when the event has
+        participants who need to be notified.
+
+        Args:
+            calendar_id: The JMAP calendar ID to create the event in.
+            ical_str: A VCALENDAR string representing the event.
+            account_id: The JMAP account owning ``calendar_id``. Defaults to
+                the authenticated user's own primary account.
+
+        Returns:
+            The server-assigned JMAP event ID.
+
+        Raises:
+            JMAPMethodError: If the server rejects the create request, or
+                with ``error_type == "noSupportedScheduleMethods"`` if a
+                participant has no usable delivery method.
+        """
+        return self._create_event_impl(
+            calendar_id, ical_str, account_id, send_scheduling_messages=True
+        )
+
+    def get_event(self, event_id: str, account_id: str | None = None) -> JMAPCalendarObject:
         """Fetch a calendar event by JMAP event ID.
 
         Args:
             event_id: The JMAP event ID to retrieve.
+            account_id: The JMAP account owning ``event_id``. Defaults to
+                the authenticated user's own primary account; pass the
+                owner's account here to fetch an event on a calendar shared
+                with you.
 
         Returns:
             A :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
@@ -768,8 +857,110 @@ class JMAPClient(_JMAPClientBase):
             JMAPMethodError: If the event is not found.
         """
         session = self._get_session()
-        responses = self._request([build_event_get(session.account_id, ids=[event_id])])
+        target_account = self._resolve_account(session, account_id)
+        responses = self._request([build_event_get(target_account, ids=[event_id])])
         return self._parse_get_event_response(responses, session.api_url, event_id)
+
+    def _find_own_participant_id(
+        self, event_id: str, own_email: str, account_id: str | None = None
+    ) -> str:
+        """Return the participant id in ``event_id`` whose email is ``own_email``.
+
+        JMAP participant ids are server-assigned per event and cannot be
+        derived or guessed, so responding to an invitation requires fetching
+        the live event first. Only the ``participants`` property is fetched,
+        not the whole event. See :meth:`_find_participant_id_by_email` for
+        the matching rules.
+
+        Raises:
+            JMAPMethodError: If the event has no participant matching
+                ``own_email``.
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        responses = self._request(
+            [build_event_get(target_account, ids=[event_id], properties=["participants"])]
+        )
+        event = self._parse_get_event_response(responses, session.api_url, event_id)
+        return self._find_participant_id_by_email(
+            event.data.get("participants", {}), own_email, session.api_url, event_id
+        )
+
+    def _respond_to_invitation(
+        self,
+        event_id: str,
+        own_email: str,
+        participation_status: str,
+        account_id: str | None = None,
+    ) -> None:
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        participant_id = self._find_own_participant_id(event_id, own_email, account_id=account_id)
+        patch = {f"participants/{participant_id}/participationStatus": participation_status}
+        call = build_event_set_update(
+            target_account, {event_id: patch}, send_scheduling_messages=True
+        )
+        responses = self._request([call])
+        self._parse_update_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set, event_id
+        )
+
+    def accept_invitation(
+        self, event_id: str, own_email: str, account_id: str | None = None
+    ) -> None:
+        """Accept a meeting invitation, notifying the organizer.
+
+        Finds the participant on ``event_id`` matching ``own_email`` and
+        sets their ``participationStatus`` to accepted. Only that one
+        property is touched; per JMAP Calendars §5.9, a non-origin account
+        may never modify anything but its own participant properties.
+
+        There is no counter-proposal method (iTIP COUNTER): neither
+        RFC 8984 nor draft-ietf-jmap-calendars-29 define one. Confirmed
+        live against Cyrus and Stalwart that a non-origin account can still
+        write ``start``/``duration`` directly through the server's own
+        rights model, but doing so is a plain update outside the §5.9
+        per-user-property restriction above, not a supported scheduling
+        primitive, and is not exposed as a method here.
+
+        Args:
+            event_id: The JMAP event ID to respond to.
+            own_email: The email address identifying which participant on
+                the event is you.
+            account_id: The JMAP account owning ``event_id``. Defaults to
+                the authenticated user's own primary account.
+
+        Raises:
+            JMAPMethodError: If no participant matches ``own_email``, or if
+                the server rejects the update.
+        """
+        self._respond_to_invitation(
+            event_id, own_email, PARTICIPATION_STATUS_ACCEPTED, account_id=account_id
+        )
+
+    def decline_invitation(
+        self, event_id: str, own_email: str, account_id: str | None = None
+    ) -> None:
+        """Decline a meeting invitation, notifying the organizer.
+
+        Same as :meth:`accept_invitation`, setting ``participationStatus``
+        to declined instead.
+        """
+        self._respond_to_invitation(
+            event_id, own_email, PARTICIPATION_STATUS_DECLINED, account_id=account_id
+        )
+
+    def tentatively_accept(
+        self, event_id: str, own_email: str, account_id: str | None = None
+    ) -> None:
+        """Tentatively accept a meeting invitation, notifying the organizer.
+
+        Same as :meth:`accept_invitation`, setting ``participationStatus``
+        to tentative instead.
+        """
+        self._respond_to_invitation(
+            event_id, own_email, PARTICIPATION_STATUS_TENTATIVE, account_id=account_id
+        )
 
     def update_event(self, event_id: str, ical_str: str, account_id: str | None = None) -> None:
         """Update a calendar event from an iCalendar string.
@@ -786,7 +977,7 @@ class JMAPClient(_JMAPClientBase):
             JMAPMethodError: If the server rejects the update.
         """
         session = self._get_session()
-        target_account = account_id if account_id is not None else session.account_id
+        target_account = self._resolve_account(session, account_id)
         patch, nulled = self._build_event_update_patch(ical_str)
         while True:
             responses = self._request([build_event_set_update(target_account, {event_id: patch})])
@@ -810,7 +1001,7 @@ class JMAPClient(_JMAPClientBase):
     ) -> list[JMAPCalendarObject]:
         session = self._get_session()
         calls = self._build_event_search_calls(
-            account_id if account_id is not None else session.account_id,
+            self._resolve_account(session, account_id),
             calendar_id,
             start,
             end,
@@ -906,7 +1097,12 @@ class JMAPClient(_JMAPClientBase):
             get_responses, created_ids, updated_ids, destroyed, new_sync_token
         )
 
-    def delete_event(self, event_id: str, account_id: str | None = None) -> None:
+    def delete_event(
+        self,
+        event_id: str,
+        account_id: str | None = None,
+        send_scheduling_messages: bool = False,
+    ) -> None:
         """Delete a calendar event.
 
         Args:
@@ -915,13 +1111,18 @@ class JMAPClient(_JMAPClientBase):
                 the authenticated user's own primary account; pass the
                 owner's account here to delete an event on a calendar
                 shared with you.
+            send_scheduling_messages: If true, and this account is the
+                event's origin, the server sends an iTIP CANCEL to the
+                event's participants (JMAP Calendars §5.9.2.2).
 
         Raises:
             JMAPMethodError: If the server rejects the delete.
         """
         session = self._get_session()
-        target_account = account_id if account_id is not None else session.account_id
-        responses = self._request([build_event_set_destroy(target_account, [event_id])])
+        target_account = self._resolve_account(session, account_id)
+        responses = self._request(
+            [build_event_set_destroy(target_account, [event_id], send_scheduling_messages)]
+        )
         self._parse_delete_response(
             responses, session.api_url, "CalendarEvent/set", parse_event_set, event_id
         )

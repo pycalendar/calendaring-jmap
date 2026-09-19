@@ -19,6 +19,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import icalendar
 from icalendar import vCalAddress, vText
 
+from calendaring_jmap.constants import (
+    PARTICIPATION_STATUS_ACCEPTED,
+    PARTICIPATION_STATUS_DECLINED,
+    PARTICIPATION_STATUS_DELEGATED,
+    PARTICIPATION_STATUS_NEEDS_ACTION,
+    PARTICIPATION_STATUS_TENTATIVE,
+)
 from calendaring_jmap.convert._fixup import fixup
 from calendaring_jmap.convert._utils import _duration_to_timedelta
 
@@ -33,11 +40,11 @@ _FREE_BUSY_TO_TRANSP = {
 }
 
 _PARTSTAT_MAP = {
-    "needs-action": "NEEDS-ACTION",
-    "accepted": "ACCEPTED",
-    "declined": "DECLINED",
-    "tentative": "TENTATIVE",
-    "delegated": "DELEGATED",
+    PARTICIPATION_STATUS_NEEDS_ACTION: "NEEDS-ACTION",
+    PARTICIPATION_STATUS_ACCEPTED: "ACCEPTED",
+    PARTICIPATION_STATUS_DECLINED: "DECLINED",
+    PARTICIPATION_STATUS_TENTATIVE: "TENTATIVE",
+    PARTICIPATION_STATUS_DELEGATED: "DELEGATED",
 }
 
 _KIND_TO_CUTYPE = {
@@ -93,6 +100,22 @@ def _start_to_dtstart(
             component.add("dtstart", dtstart)
     else:
         component.add("dtstart", dt_naive)
+
+
+def _recurrence_rules(jscal: dict, singular_key: str, plural_key: str) -> list[dict]:
+    """Return the RecurrenceRule dicts for ``singular_key``/``plural_key`` on an Event.
+
+    RFC 8984 defines the plural key as an array; both test servers this repo
+    targets send the singular key instead (see the matching comment in
+    ical_to_jscal.py). Prefer the plural array when present, since it is the
+    actual spec type and can hold more than one rule; fall back to the
+    singular key for these servers' shape.
+    """
+    plural_rules = jscal.get(plural_key)
+    if plural_rules:
+        return plural_rules
+    single_rule = jscal.get(singular_key)
+    return [single_rule] if single_rule else []
 
 
 def _jscal_rrule_to_rrule(rule: dict, time_zone: str | None = None) -> dict:
@@ -195,8 +218,15 @@ def _jscal_rrule_to_rrule(rule: dict, time_zone: str | None = None) -> dict:
 
 def _participant_imip(p: dict) -> str:
     send_to = p.get("sendTo", {})
-    imip = send_to.get("imip") or send_to.get("other") or p.get("email", "")
-    if imip and not imip.startswith("mailto:"):
+    imip = (
+        send_to.get("imip")
+        or send_to.get("other")
+        or p.get("calendarAddress")
+        or p.get("email", "")
+    )
+    # calendarAddress (and sendTo.other) can already carry a non-mailto
+    # scheme (e.g. sip:); only bare addresses need mailto: added.
+    if imip and ":" not in imip:
         imip = f"mailto:{imip}"
     return imip
 
@@ -384,12 +414,12 @@ def jscal_to_ical(jscal: dict) -> str:
         if ical_status:
             event.add("status", ical_status)
 
-    for rule in jscal.get("recurrenceRules") or []:
+    for rule in _recurrence_rules(jscal, "recurrenceRule", "recurrenceRules"):
         ical_rule = _jscal_rrule_to_rrule(rule, time_zone)
         if ical_rule:
             event.add("rrule", ical_rule)
 
-    for rule in jscal.get("excludedRecurrenceRules") or []:
+    for rule in _recurrence_rules(jscal, "excludedRecurrenceRule", "excludedRecurrenceRules"):
         ical_rule = _jscal_rrule_to_rrule(rule, time_zone)
         if ical_rule:
             event.add("exrule", ical_rule)

@@ -1566,16 +1566,31 @@ class TestEventMethodBuilders:
         assert "create" in args
         assert "new-1" in args["create"]
         assert "id" not in args["create"]["new-1"]
+        assert args["sendSchedulingMessages"] is False
+
+    def test_build_event_set_create_with_scheduling_messages(self):
+        _, args, _ = build_event_set_create("u1", {"new-1": {}}, send_scheduling_messages=True)
+        assert args["sendSchedulingMessages"] is True
 
     def test_build_event_set_update_structure(self):
         method, args, call_id = build_event_set_update("u1", {"ev1": {"title": "Updated title"}})
         assert method == "CalendarEvent/set"
         assert args["update"] == {"ev1": {"title": "Updated title"}}
+        assert args["sendSchedulingMessages"] is False
+
+    def test_build_event_set_update_with_scheduling_messages(self):
+        _, args, _ = build_event_set_update("u1", {"ev1": {}}, send_scheduling_messages=True)
+        assert args["sendSchedulingMessages"] is True
 
     def test_build_event_set_destroy_structure(self):
         method, args, call_id = build_event_set_destroy("u1", ["ev1", "ev2"])
         assert method == "CalendarEvent/set"
         assert args["destroy"] == ["ev1", "ev2"]
+        assert args["sendSchedulingMessages"] is False
+
+    def test_build_event_set_destroy_with_scheduling_messages(self):
+        _, args, _ = build_event_set_destroy("u1", ["ev1"], send_scheduling_messages=True)
+        assert args["sendSchedulingMessages"] is True
 
     def test_parse_event_set_created(self):
         response_args = {
@@ -1957,8 +1972,8 @@ class TestIcalToJscal:
             "RRULE:FREQ=WEEKLY;BYDAY=MO,WE\r\n"
         )
         result = ical_to_jscal(ical)
-        assert "recurrenceRules" in result
-        rule = result["recurrenceRules"][0]
+        assert "recurrenceRule" in result
+        rule = result["recurrenceRule"]
         assert rule["@type"] == "RecurrenceRule"
         assert rule["frequency"] == "weekly"
         assert rule["interval"] == 1
@@ -1973,7 +1988,7 @@ class TestIcalToJscal:
             "RRULE:FREQ=MONTHLY;BYDAY=2MO\r\n"
         )
         result = ical_to_jscal(ical)
-        nday = result["recurrenceRules"][0]["byDay"][0]
+        nday = result["recurrenceRule"]["byDay"][0]
         assert nday["day"] == "mo"
         assert nday["nthOfPeriod"] == 2
 
@@ -1984,7 +1999,7 @@ class TestIcalToJscal:
             "BYWEEKNO=24;BYHOUR=14;BYMINUTE=30;BYSECOND=15;BYSETPOS=1\r\n"
         )
         result = ical_to_jscal(ical)
-        rule = result["recurrenceRules"][0]
+        rule = result["recurrenceRule"]
         assert rule["byMonth"] == ["6"]
         assert rule["byMonthDay"] == [15]
         assert rule["byYearDay"] == [166]
@@ -2083,6 +2098,33 @@ class TestIcalToJscal:
         result = ical_to_jscal(ical)
         attendee = next(iter(result["participants"].values()))
         assert attendee["participationStatus"] == "declined"
+
+    def test_organizer_attendee_use_calendar_address_not_send_to(self):
+        # Cyrus rejects CalendarEvent/set outright if any Participant has a
+        # sendTo property, and separately requires calendarAddress, which
+        # RFC 8984 does not define here at all. Verified live against Cyrus.
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "SUMMARY:Meeting\r\n"
+            "ORGANIZER:mailto:alice@example.com\r\n"
+            "ATTENDEE:mailto:bob@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        for participant in result["participants"].values():
+            assert "sendTo" not in participant
+            assert participant["calendarAddress"] == f"mailto:{participant['email']}"
+
+    def test_non_mailto_attendee_keeps_calendar_address_without_fake_email(self):
+        # CAL-ADDRESS is a URI (RFC 5545 3.3.3), not required to use
+        # mailto:. RFC 8984's Participant.email is an RFC 5322 addr-spec,
+        # so a non-mailto URI must not be written there.
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Meeting\r\nATTENDEE:sip:alice@example.com\r\n"
+        )
+        result = ical_to_jscal(ical)
+        attendee = next(iter(result["participants"].values()))
+        assert attendee["calendarAddress"] == "sip:alice@example.com"
+        assert "email" not in attendee
 
     def test_calendar_id_set(self):
         ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:Cal Event\r\n")
@@ -2228,22 +2270,28 @@ class TestIcalToJscal:
         result = ical_to_jscal(ical)
         assert len(result["recurrenceOverrides"]) == 2
 
-    def test_rrule_multiple_lines_already_a_list(self):
+    def test_rrule_multiple_lines_keeps_only_the_first(self, caplog):
+        # Only the first RRULE is kept when a VEVENT has more than one; see
+        # the comment in ical_to_jscal.py next to "recurrenceRule" for why
+        # (neither test server this repo targets accepts RFC 8984's actual
+        # RecurrenceRule[] array, only a single object). This is a real data
+        # loss case, so it must be logged, not silent.
         ical = _make_ical(
             "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Multi RRULE\r\n"
             "RRULE:FREQ=DAILY\r\nRRULE:FREQ=WEEKLY\r\n"
         )
-        result = ical_to_jscal(ical)
-        freqs = {r["frequency"] for r in result["recurrenceRules"]}
-        assert freqs == {"daily", "weekly"}
+        with caplog.at_level("WARNING"):
+            result = ical_to_jscal(ical)
+        assert result["recurrenceRule"]["frequency"] == "daily"
+        assert "only the first is kept" in caplog.text
 
-    def test_exrule_multiple_lines_already_a_list(self):
+    def test_exrule_multiple_lines_keeps_only_the_first(self):
         ical = _make_ical(
             "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Multi EXRULE\r\n"
             "RRULE:FREQ=DAILY\r\nEXRULE:FREQ=DAILY;BYDAY=SU\r\nEXRULE:FREQ=DAILY;BYDAY=SA\r\n"
         )
         result = ical_to_jscal(ical)
-        assert len(result["excludedRecurrenceRules"]) == 2
+        assert result["excludedRecurrenceRule"]["byDay"][0]["day"] == "su"
 
     def test_valarm_trigger_neither_duration_nor_datetime(self):
         from calendaring_jmap.convert.ical_to_jscal import _valarm_to_alert
@@ -2323,8 +2371,7 @@ class TestIcalToJscal:
             "RRULE:FREQ=DAILY\r\nEXRULE:FREQ=DAILY;BYDAY=SU\r\n"
         )
         result = ical_to_jscal(ical)
-        assert len(result["excludedRecurrenceRules"]) == 1
-        assert result["excludedRecurrenceRules"][0]["frequency"] == "daily"
+        assert result["excludedRecurrenceRule"]["frequency"] == "daily"
 
     def test_recurrence_override_with_no_changed_fields_is_empty_patch(self):
         # Override VEVENT carries only RECURRENCE-ID + SUMMARY matching the
@@ -2658,6 +2705,39 @@ class TestJscalToIcal:
         result = jscal_to_ical(jscal)
         assert "mailto:bob@example.com" in result
 
+    def test_participant_falls_back_to_calendar_address_without_send_to(self):
+        # ical_to_jscal no longer emits sendTo (see the matching ical_to_jscal
+        # test); the reverse direction must still round-trip a participant
+        # that only has calendarAddress, no sendTo, no email.
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "calendarAddress": "mailto:carol@example.com",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        # Long ATTENDEE lines get folded per RFC 5545, so join continuation
+        # lines back together before checking for the address.
+        assert "mailto:carol@example.com" in result.replace("\n ", "")
+
+    def test_non_mailto_calendar_address_is_not_double_wrapped(self):
+        # calendarAddress can carry a non-mailto URI scheme (e.g. sip:);
+        # it must round-trip as-is, not get a spurious mailto: prepended.
+        jscal = _minimal_jscal(
+            participants={
+                "p1": {
+                    "roles": {"attendee": True},
+                    "calendarAddress": "sip:alice@example.com",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        joined = result.replace("\n ", "")
+        assert "sip:alice@example.com" in joined
+        assert "mailto:sip:alice@example.com" not in joined
+
     def test_organizer_without_name_has_no_cn(self):
         jscal = _minimal_jscal(
             participants={
@@ -2960,6 +3040,22 @@ class TestJscalToIcal:
         )
         assert "EXRULE" in jscal_to_ical(jscal)
 
+    def test_recurrence_rules_array_wins_over_singular_when_both_present(self):
+        # A spec-compliant server could send both keys; the array is the
+        # real RFC 8984 type and can carry more than one rule, so it must
+        # not be silently discarded in favor of the singular key.
+        jscal = _minimal_jscal(
+            recurrenceRule={"@type": "RecurrenceRule", "frequency": "daily"},
+            recurrenceRules=[
+                {"@type": "RecurrenceRule", "frequency": "weekly"},
+                {"@type": "RecurrenceRule", "frequency": "monthly"},
+            ],
+        )
+        result = jscal_to_ical(jscal)
+        assert "RRULE:FREQ=WEEKLY" in result
+        assert "RRULE:FREQ=MONTHLY" in result
+        assert "FREQ=DAILY" not in result
+
     def test_recurrence_override_patch_becomes_child_vevent(self):
         jscal = _minimal_jscal(
             start="2024-06-17T14:00:00Z",
@@ -3018,9 +3114,18 @@ class TestRoundTrip:
             "RRULE:FREQ=WEEKLY;COUNT=4\r\n"
         )
         ctx = self._key_fields_survive(ical)
-        assert "recurrenceRules" in ctx["jscal"]
-        assert ctx["jscal"]["recurrenceRules"][0]["frequency"] == "weekly"
+        assert "recurrenceRule" in ctx["jscal"]
+        assert ctx["jscal"]["recurrenceRule"]["frequency"] == "weekly"
         assert "RRULE" in ctx["ical"]
+
+    def test_non_mailto_attendee_round_trip(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:SIP Attendee\r\n"
+            "ATTENDEE:sip:alice@example.com\r\n"
+        )
+        ctx = self._key_fields_survive(ical)
+        attendee = str(ctx["event"]["ATTENDEE"])
+        assert attendee == "sip:alice@example.com"
 
     def test_with_alert_round_trip(self):
         ical = _make_ical(
@@ -3089,6 +3194,30 @@ class _MockedClientMixin:
 
         self._mock_http(client, side_effect=capturing_post)
         return client, captured
+
+
+def _participant_event(
+    raw_event: dict, own_email: str = "me@example.com", participant_id: str = "p1"
+) -> dict:
+    """Build a raw event dict with two participants: ``own_email`` as an
+    attendee under ``participant_id``, plus a fixed organizer. Shared by the
+    sync and async scheduling tests, which otherwise wrap it in different
+    response-envelope helpers (``_get_response``/``_event_get_resp``)."""
+    return {
+        **raw_event,
+        "participants": {
+            participant_id: {
+                "@type": "Participant",
+                "email": own_email,
+                "roles": {"attendee": True},
+            },
+            "p-organizer": {
+                "@type": "Participant",
+                "email": "organizer@example.com",
+                "roles": {"owner": True},
+            },
+        },
+    }
 
 
 class TestJMAPClientEvents(_MockedClientMixin):
@@ -3179,6 +3308,13 @@ class TestJMAPClientEvents(_MockedClientMixin):
             client.get_event("missing-id")
         assert exc_info.value.error_type == "notFound"
 
+    def test_get_event_uses_given_account_id(self, monkeypatch):
+        client, captured = self._capturing_client(monkeypatch, self._get_response([]))
+        with pytest.raises(JMAPMethodError):
+            client.get_event("ev1", account_id="owner-account")
+        get_args = captured["json"]["methodCalls"][0][1]
+        assert get_args["accountId"] == "owner-account"
+
     def test_update_event_success(self, monkeypatch):
         resp = self._set_response(updated={"ev1": None})
         client = _make_client_with_mocked_session(monkeypatch, resp)
@@ -3267,8 +3403,8 @@ class TestJMAPClientEvents(_MockedClientMixin):
             )
 
         responses = [
-            reject("recurrenceRules"),
-            reject("excludedRecurrenceRules"),
+            reject("recurrenceRule"),
+            reject("excludedRecurrenceRule"),
             self._set_response(updated={"ev1": None}),
         ]
         client, captured = self._sequence_client(responses)
@@ -3276,9 +3412,9 @@ class TestJMAPClientEvents(_MockedClientMixin):
 
         assert len(captured["patches"]) == 3
         # First attempt nulled both recurrence keys; the final accepted patch dropped them.
-        assert captured["patches"][0]["recurrenceRules"] is None
-        assert "recurrenceRules" not in captured["patches"][2]
-        assert "excludedRecurrenceRules" not in captured["patches"][2]
+        assert captured["patches"][0]["recurrenceRule"] is None
+        assert "recurrenceRule" not in captured["patches"][2]
+        assert "excludedRecurrenceRule" not in captured["patches"][2]
 
     def test_update_event_does_not_drop_explicitly_set_property(self, monkeypatch):
         # If the rejected property was actually assigned a value by the client
@@ -3323,6 +3459,180 @@ class TestJMAPClientEvents(_MockedClientMixin):
         client.delete_event("ev1", account_id="owner-account")
         destroy_args = captured["json"]["methodCalls"][0][1]
         assert destroy_args["accountId"] == "owner-account"
+
+    def test_delete_event_sends_scheduling_messages(self, monkeypatch):
+        resp = self._set_response(destroyed=["ev1"])
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.delete_event("ev1", send_scheduling_messages=True)
+        destroy_args = captured["json"]["methodCalls"][0][1]
+        assert destroy_args["sendSchedulingMessages"] is True
+
+    def test_send_invite_returns_server_id(self, monkeypatch):
+        resp = self._set_response(created={"new-0": {"id": "sv-1"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        event_id = client.send_invite("cal1", self._MINIMAL_ICAL)
+        assert event_id == "sv-1"
+
+    def test_send_invite_sends_scheduling_messages(self, monkeypatch):
+        resp = self._set_response(created={"new-0": {"id": "sv-1"}})
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.send_invite("cal1", self._MINIMAL_ICAL)
+        create_args = captured["json"]["methodCalls"][0][1]
+        assert create_args["sendSchedulingMessages"] is True
+
+    def test_send_invite_raises_no_supported_schedule_methods(self, monkeypatch):
+        resp = self._set_response(notCreated={"new-0": {"type": "noSupportedScheduleMethods"}})
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.send_invite("cal1", self._MINIMAL_ICAL)
+        assert exc_info.value.error_type == "noSupportedScheduleMethods"
+
+    def _participant_event_response(self, own_email="me@example.com", participant_id="p1"):
+        return self._get_response([_participant_event(self._RAW_EVENT, own_email, participant_id)])
+
+    def test_find_own_participant_id_matches_case_insensitively(self, monkeypatch):
+        resp = self._participant_event_response(own_email="Me@Example.com")
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        participant_id = client._find_own_participant_id("ev1", "me@example.com")
+        assert participant_id == "p1"
+
+    def test_find_own_participant_id_raises_when_no_match(self, monkeypatch):
+        resp = self._participant_event_response()
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client._find_own_participant_id("ev1", "stranger@example.com")
+        assert exc_info.value.error_type == "notFound"
+
+    def test_find_own_participant_id_falls_back_to_calendar_address(self, monkeypatch):
+        # A participant with no "email" (a spec-compliant server, or one set
+        # by another client) must still be matchable via calendarAddress.
+        resp = self._get_response(
+            [
+                {
+                    **self._RAW_EVENT,
+                    "participants": {
+                        "p1": {
+                            "@type": "Participant",
+                            "calendarAddress": "mailto:me@example.com",
+                            "roles": {"attendee": True},
+                        },
+                    },
+                }
+            ]
+        )
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        participant_id = client._find_own_participant_id("ev1", "me@example.com")
+        assert participant_id == "p1"
+
+    def test_find_own_participant_id_raises_not_null_email_and_calendar_address(self, monkeypatch):
+        # dict.get(key, default) only substitutes the default when the key
+        # is absent, not when it is present and explicitly null. A
+        # participant shaped this way must still raise notFound cleanly,
+        # not crash with an AttributeError from calling str methods on None.
+        resp = self._get_response(
+            [
+                {
+                    **self._RAW_EVENT,
+                    "participants": {
+                        "p1": {
+                            "@type": "Participant",
+                            "email": "",
+                            "calendarAddress": None,
+                            "roles": {"attendee": True},
+                        },
+                    },
+                }
+            ]
+        )
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client._find_own_participant_id("ev1", "me@example.com")
+        assert exc_info.value.error_type == "notFound"
+
+    def test_find_own_participant_id_matches_non_mailto_calendar_address(self, monkeypatch):
+        # A participant converted from a non-mailto CAL-ADDRESS (e.g. sip:)
+        # has no "email" at all; matching must still work via calendarAddress.
+        resp = self._get_response(
+            [
+                {
+                    **self._RAW_EVENT,
+                    "participants": {
+                        "p1": {
+                            "@type": "Participant",
+                            "calendarAddress": "sip:alice@example.com",
+                            "roles": {"attendee": True},
+                        },
+                    },
+                }
+            ]
+        )
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        participant_id = client._find_own_participant_id("ev1", "sip:alice@example.com")
+        assert participant_id == "p1"
+
+    def _accept_sequence_client(self, monkeypatch, own_email="me@example.com", set_response=None):
+        """Return (client, captured) where the first POST answers CalendarEvent/get
+        with a participant event and the second answers CalendarEvent/set."""
+        get_resp = self._participant_event_response(own_email=own_email)
+        set_resp = (
+            set_response if set_response is not None else self._set_response(updated={"ev1": None})
+        )
+        responses = iter([get_resp, set_resp])
+        captured: dict = {"payloads": []}
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
+
+        def post(*args, **kwargs):
+            captured["payloads"].append(kwargs.get("json"))
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = next(responses)
+            mock_resp.raise_for_status = MagicMock()
+            return mock_resp
+
+        mock_http = MagicMock()
+        mock_http.post.side_effect = post
+        client._http_session = mock_http
+        return client, captured
+
+    def test_accept_invitation_patches_own_participant(self, monkeypatch):
+        client, captured = self._accept_sequence_client(monkeypatch)
+        client.accept_invitation("ev1", "me@example.com")
+        update_args = captured["payloads"][1]["methodCalls"][0][1]
+        assert update_args["update"]["ev1"] == {"participants/p1/participationStatus": "accepted"}
+        assert update_args["sendSchedulingMessages"] is True
+
+    def test_accept_invitation_fetches_only_participants(self, monkeypatch):
+        client, captured = self._accept_sequence_client(monkeypatch)
+        client.accept_invitation("ev1", "me@example.com")
+        get_args = captured["payloads"][0]["methodCalls"][0][1]
+        assert get_args["properties"] == ["participants"]
+
+    def test_decline_invitation_patches_own_participant(self, monkeypatch):
+        client, captured = self._accept_sequence_client(monkeypatch)
+        client.decline_invitation("ev1", "me@example.com")
+        update_args = captured["payloads"][1]["methodCalls"][0][1]
+        assert update_args["update"]["ev1"] == {"participants/p1/participationStatus": "declined"}
+
+    def test_tentatively_accept_patches_own_participant(self, monkeypatch):
+        client, captured = self._accept_sequence_client(monkeypatch)
+        client.tentatively_accept("ev1", "me@example.com")
+        update_args = captured["payloads"][1]["methodCalls"][0][1]
+        assert update_args["update"]["ev1"] == {"participants/p1/participationStatus": "tentative"}
+
+    def test_accept_invitation_raises_when_no_matching_participant(self, monkeypatch):
+        resp = self._participant_event_response()
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.accept_invitation("ev1", "stranger@example.com")
+        assert exc_info.value.error_type == "notFound"
+
+    def test_accept_invitation_raises_on_server_rejection(self, monkeypatch):
+        rejection = self._set_response(notUpdated={"ev1": {"type": "forbidden"}})
+        client, _ = self._accept_sequence_client(monkeypatch, set_response=rejection)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.accept_invitation("ev1", "me@example.com")
+        assert exc_info.value.error_type == "forbidden"
 
     def _query_get_response(self, items):
         return {
@@ -4238,6 +4548,14 @@ class TestAsyncJMAPClient:
         assert exc_info.value.error_type == "notFound"
 
     @pytest.mark.asyncio
+    async def test_get_event_uses_given_account_id(self, monkeypatch):
+        mock_http = self._patch_async_session(monkeypatch, self._event_get_resp([]))
+        with pytest.raises(JMAPMethodError):
+            await self._make_client().get_event("ev-async-1", account_id="owner-account")
+        get_args = mock_http.post.call_args.kwargs["json"]["methodCalls"][0][1]
+        assert get_args["accountId"] == "owner-account"
+
+    @pytest.mark.asyncio
     async def test_update_event_success(self, monkeypatch):
         resp = self._event_set_resp(updated={"ev-async-1": None}, notUpdated={})
         self._patch_async_session(monkeypatch, resp)
@@ -4276,12 +4594,148 @@ class TestAsyncJMAPClient:
         assert destroy_args["accountId"] == "owner-account"
 
     @pytest.mark.asyncio
+    async def test_delete_event_sends_scheduling_messages(self, monkeypatch):
+        resp = self._event_set_resp(destroyed=["ev-async-1"], notDestroyed={})
+        mock_http = self._patch_async_session(monkeypatch, resp)
+        await self._make_client().delete_event("ev-async-1", send_scheduling_messages=True)
+        destroy_args = mock_http.post.call_args.kwargs["json"]["methodCalls"][0][1]
+        assert destroy_args["sendSchedulingMessages"] is True
+
+    @pytest.mark.asyncio
     async def test_delete_event_raises_on_failure(self, monkeypatch):
         resp = self._event_set_resp(destroyed=[], notDestroyed={"ev-async-1": {"type": "notFound"}})
         self._patch_async_session(monkeypatch, resp)
         with pytest.raises(JMAPMethodError) as exc_info:
             await self._make_client().delete_event("ev-async-1")
         assert exc_info.value.error_type == "notFound"
+
+    @pytest.mark.asyncio
+    async def test_send_invite_returns_id(self, monkeypatch):
+        resp = self._event_set_resp(created={"new-0": {"id": "sv-async-1"}}, notCreated={})
+        self._patch_async_session(monkeypatch, resp)
+        event_id = await self._make_client().send_invite("cal1", self._MINIMAL_ICAL)
+        assert event_id == "sv-async-1"
+
+    @pytest.mark.asyncio
+    async def test_send_invite_sends_scheduling_messages(self, monkeypatch):
+        resp = self._event_set_resp(created={"new-0": {"id": "sv-async-1"}}, notCreated={})
+        mock_http = self._patch_async_session(monkeypatch, resp)
+        await self._make_client().send_invite("cal1", self._MINIMAL_ICAL)
+        create_args = mock_http.post.call_args.kwargs["json"]["methodCalls"][0][1]
+        assert create_args["sendSchedulingMessages"] is True
+
+    def _participant_event_resp(self, own_email="me@example.com", participant_id="p1"):
+        return self._event_get_resp(
+            [_participant_event(self._RAW_EVENT, own_email, participant_id)]
+        )
+
+    def _patch_accept_sequence(self, monkeypatch, own_email="me@example.com", set_response=None):
+        get_resp = self._participant_event_resp(own_email=own_email)
+        set_resp = (
+            set_response
+            if set_response is not None
+            else self._event_set_resp(updated={"ev-async-1": None})
+        )
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(
+            side_effect=[
+                self._make_mock_response(get_resp),
+                self._make_mock_response(set_resp),
+            ]
+        )
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        return mock_http
+
+    @pytest.mark.asyncio
+    async def test_find_own_participant_id_matches_case_insensitively(self, monkeypatch):
+        self._patch_async_session(
+            monkeypatch, self._participant_event_resp(own_email="Me@Example.com")
+        )
+        participant_id = await self._make_client()._find_own_participant_id(
+            "ev-async-1", "me@example.com"
+        )
+        assert participant_id == "p1"
+
+    @pytest.mark.asyncio
+    async def test_find_own_participant_id_raises_when_no_match(self, monkeypatch):
+        self._patch_async_session(monkeypatch, self._participant_event_resp())
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client()._find_own_participant_id("ev-async-1", "stranger@example.com")
+        assert exc_info.value.error_type == "notFound"
+
+    @pytest.mark.asyncio
+    async def test_find_own_participant_id_falls_back_to_calendar_address(self, monkeypatch):
+        resp = self._event_get_resp(
+            [
+                {
+                    **self._RAW_EVENT,
+                    "participants": {
+                        "p1": {
+                            "@type": "Participant",
+                            "calendarAddress": "mailto:me@example.com",
+                            "roles": {"attendee": True},
+                        },
+                    },
+                }
+            ]
+        )
+        self._patch_async_session(monkeypatch, resp)
+        participant_id = await self._make_client()._find_own_participant_id(
+            "ev-async-1", "me@example.com"
+        )
+        assert participant_id == "p1"
+
+    @pytest.mark.asyncio
+    async def test_accept_invitation_patches_own_participant(self, monkeypatch):
+        mock_http = self._patch_accept_sequence(monkeypatch)
+        await self._make_client().accept_invitation("ev-async-1", "me@example.com")
+        update_args = mock_http.post.call_args_list[1].kwargs["json"]["methodCalls"][0][1]
+        assert update_args["update"]["ev-async-1"] == {
+            "participants/p1/participationStatus": "accepted"
+        }
+        assert update_args["sendSchedulingMessages"] is True
+
+    @pytest.mark.asyncio
+    async def test_accept_invitation_fetches_only_participants(self, monkeypatch):
+        mock_http = self._patch_accept_sequence(monkeypatch)
+        await self._make_client().accept_invitation("ev-async-1", "me@example.com")
+        get_args = mock_http.post.call_args_list[0].kwargs["json"]["methodCalls"][0][1]
+        assert get_args["properties"] == ["participants"]
+
+    @pytest.mark.asyncio
+    async def test_decline_invitation_patches_own_participant(self, monkeypatch):
+        mock_http = self._patch_accept_sequence(monkeypatch)
+        await self._make_client().decline_invitation("ev-async-1", "me@example.com")
+        update_args = mock_http.post.call_args_list[1].kwargs["json"]["methodCalls"][0][1]
+        assert update_args["update"]["ev-async-1"] == {
+            "participants/p1/participationStatus": "declined"
+        }
+
+    @pytest.mark.asyncio
+    async def test_tentatively_accept_patches_own_participant(self, monkeypatch):
+        mock_http = self._patch_accept_sequence(monkeypatch)
+        await self._make_client().tentatively_accept("ev-async-1", "me@example.com")
+        update_args = mock_http.post.call_args_list[1].kwargs["json"]["methodCalls"][0][1]
+        assert update_args["update"]["ev-async-1"] == {
+            "participants/p1/participationStatus": "tentative"
+        }
+
+    @pytest.mark.asyncio
+    async def test_accept_invitation_raises_when_no_matching_participant(self, monkeypatch):
+        self._patch_async_session(monkeypatch, self._participant_event_resp())
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().accept_invitation("ev-async-1", "stranger@example.com")
+        assert exc_info.value.error_type == "notFound"
+
+    @pytest.mark.asyncio
+    async def test_accept_invitation_raises_on_server_rejection(self, monkeypatch):
+        rejection = self._event_set_resp(notUpdated={"ev-async-1": {"type": "forbidden"}})
+        self._patch_accept_sequence(monkeypatch, set_response=rejection)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().accept_invitation("ev-async-1", "me@example.com")
+        assert exc_info.value.error_type == "forbidden"
 
     @pytest.mark.asyncio
     async def test_search_events_returns_ical_list(self, monkeypatch):
@@ -4605,7 +5059,7 @@ class TestAsyncJMAPClient:
             )
 
         responses = [
-            reject("recurrenceRules"),
+            reject("recurrenceRule"),
             self._event_set_resp(updated={"ev-async-1": None}, notUpdated={}),
         ]
         mock_http = MagicMock()
@@ -4623,8 +5077,8 @@ class TestAsyncJMAPClient:
         monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
         await self._make_client().update_event("ev-async-1", self._MINIMAL_ICAL)
         assert len(patches_seen) == 2
-        assert patches_seen[0]["recurrenceRules"] is None
-        assert "recurrenceRules" not in patches_seen[1]
+        assert patches_seen[0]["recurrenceRule"] is None
+        assert "recurrenceRule" not in patches_seen[1]
 
 
 class TestOverrideWithoutStartUsesOccurrenceTime:
@@ -4774,7 +5228,7 @@ class TestLocalDateTimeIsEventLocal:
     def test_until_is_converted_to_event_timezone(self):
         # 2024-06-30T07:00:00Z is 09:00 in Europe/Berlin (CEST, UTC+2).
         jscal = self._convert("RRULE:FREQ=WEEKLY;UNTIL=20240630T070000Z\r\n")
-        assert jscal["recurrenceRules"][0]["until"] == "2024-06-30T09:00:00"
+        assert jscal["recurrenceRule"]["until"] == "2024-06-30T09:00:00"
 
     def test_exdate_key_is_converted_to_event_timezone(self):
         jscal = self._convert("RRULE:FREQ=WEEKLY\r\nEXDATE;VALUE=DATE-TIME:20240622T070000Z\r\n")
@@ -4788,7 +5242,7 @@ class TestLocalDateTimeIsEventLocal:
         back through jscal_to_ical produces UNTIL=20240701T120000 with no Z
         suffix, which RFC 5545 3.3.10 forbids for TZID events")."""
         jscal = self._convert("RRULE:FREQ=WEEKLY;UNTIL=20240630T070000Z\r\n")
-        assert jscal["recurrenceRules"][0]["until"] == "2024-06-30T09:00:00"
+        assert jscal["recurrenceRule"]["until"] == "2024-06-30T09:00:00"
         ical = jscal_to_ical(jscal)
         assert "DTSTART;TZID=Europe/Berlin:20240615T090000" in ical
         assert "UNTIL=20240630T070000Z" in ical, (
@@ -4823,7 +5277,7 @@ class TestLocalDateTimeIsEventLocal:
             "END:VEVENT\r\nEND:VCALENDAR\r\n"
         )
         jscal = ical_to_jscal(ical)
-        assert jscal["recurrenceRules"][0]["until"] == "2024-06-30T07:00:00"
+        assert jscal["recurrenceRule"]["until"] == "2024-06-30T07:00:00"
 
 
 class TestJMAPSessionRelease:
