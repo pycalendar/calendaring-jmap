@@ -1,0 +1,1 @@
+``requests`` is no longer a hard dependency. ``niquests`` is used by default and remains required; ``requests`` is only needed as a fallback if ``niquests`` isn't installed, and is now its own extra: ``pip install calendaring-jmap[requests]``.
