@@ -194,6 +194,7 @@ def build_event_query_changes(
 def build_event_set_create(
     account_id: str,
     events: dict[str, dict],
+    send_scheduling_messages: bool = False,
 ) -> tuple:
     """Build a ``CalendarEvent/set`` method call for creating events.
 
@@ -203,6 +204,8 @@ def build_event_set_create(
             The creation IDs are ephemeral — they are used to correlate
             server responses with individual creation requests within the
             same batch call.
+        send_scheduling_messages: If true, the server sends iTIP scheduling
+            messages to the event's participants (JMAP Calendars §5.9).
 
     Returns:
         A 3-tuple ``("CalendarEvent/set", arguments_dict, call_id)``.
@@ -212,6 +215,7 @@ def build_event_set_create(
         {
             "accountId": account_id,
             "create": dict(events),
+            "sendSchedulingMessages": send_scheduling_messages,
         },
         "ev-set-create-0",
     )
@@ -220,6 +224,7 @@ def build_event_set_create(
 def build_event_set_update(
     account_id: str,
     updates: dict[str, dict],
+    send_scheduling_messages: bool = False,
 ) -> tuple:
     """Build a ``CalendarEvent/set`` method call for updating events.
 
@@ -229,13 +234,20 @@ def build_event_set_update(
             names (or JSON Pointer paths for nested properties); values are
             the new values.  Use ``None`` as a value to reset a property to
             its server default.
+        send_scheduling_messages: If true, the server sends iTIP scheduling
+            messages to the event's participants, or back to the organizer
+            if this account isn't the event's origin (JMAP Calendars §5.9).
 
     Returns:
         A 3-tuple ``("CalendarEvent/set", arguments_dict, call_id)``.
     """
     return (
         "CalendarEvent/set",
-        {"accountId": account_id, "update": updates},
+        {
+            "accountId": account_id,
+            "update": updates,
+            "sendSchedulingMessages": send_scheduling_messages,
+        },
         "ev-set-update-0",
     )
 
@@ -243,19 +255,27 @@ def build_event_set_update(
 def build_event_set_destroy(
     account_id: str,
     ids: list[str],
+    send_scheduling_messages: bool = False,
 ) -> tuple:
     """Build a ``CalendarEvent/set`` method call for destroying events.
 
     Args:
         account_id: The JMAP accountId.
         ids: List of event IDs to destroy.
+        send_scheduling_messages: If true, and this account is the event's
+            origin, the server sends an iTIP CANCEL to the event's
+            participants (JMAP Calendars §5.9.2.2).
 
     Returns:
         A 3-tuple ``("CalendarEvent/set", arguments_dict, call_id)``.
     """
     return (
         "CalendarEvent/set",
-        {"accountId": account_id, "destroy": ids},
+        {
+            "accountId": account_id,
+            "destroy": ids,
+            "sendSchedulingMessages": send_scheduling_messages,
+        },
         "ev-set-destroy-0",
     )
 

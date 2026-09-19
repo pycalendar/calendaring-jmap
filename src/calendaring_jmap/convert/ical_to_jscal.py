@@ -13,14 +13,24 @@ directly to CalendarEvent/set.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime, timedelta
 
 import icalendar
 from icalendar.timezone.tzid import tzid_from_dt
 
+from calendaring_jmap.constants import (
+    PARTICIPATION_STATUS_ACCEPTED,
+    PARTICIPATION_STATUS_DECLINED,
+    PARTICIPATION_STATUS_DELEGATED,
+    PARTICIPATION_STATUS_NEEDS_ACTION,
+    PARTICIPATION_STATUS_TENTATIVE,
+)
 from calendaring_jmap.convert._fixup import fixup
 from calendaring_jmap.convert._utils import _format_local_dt, _timedelta_to_duration
+
+log = logging.getLogger("calendaring_jmap")
 
 # RFC 5545 STATUS -> RFC 8984 status; module-level constant (cf. _CLASS_MAP etc.)
 _STATUS_ICAL_TO_JSCAL = {
@@ -35,11 +45,11 @@ _CLASS_MAP = {
 }
 
 _PARTSTAT_MAP = {
-    "NEEDS-ACTION": "needs-action",
-    "ACCEPTED": "accepted",
-    "DECLINED": "declined",
-    "TENTATIVE": "tentative",
-    "DELEGATED": "delegated",
+    "NEEDS-ACTION": PARTICIPATION_STATUS_NEEDS_ACTION,
+    "ACCEPTED": PARTICIPATION_STATUS_ACCEPTED,
+    "DECLINED": PARTICIPATION_STATUS_DECLINED,
+    "TENTATIVE": PARTICIPATION_STATUS_TENTATIVE,
+    "DELEGATED": PARTICIPATION_STATUS_DELEGATED,
 }
 
 _CUTYPE_MAP = {
@@ -184,6 +194,28 @@ def _rrule_to_jscal(rrule_prop, tzinfo=None) -> dict:
     return rule
 
 
+def _first_recurrence_rule(master: dict, ical_key: str, tzinfo=None) -> dict | None:
+    """Return the JSCalendar RecurrenceRule for the first ``ical_key`` line on ``master``.
+
+    ``ical_key`` is ``"RRULE"`` or ``"EXRULE"``. Logs a warning if more than
+    one line is present; see the comment above this function's call sites
+    for why only the first is kept.
+    """
+    rules = master.get(ical_key)
+    if rules is None:
+        return None
+    if not isinstance(rules, list):
+        rules = [rules]
+    if len(rules) > 1:
+        log.warning(
+            "ical_to_jscal(): VEVENT has %d %s lines, only the first is kept "
+            "(neither test server this repo targets accepts more than one)",
+            len(rules),
+            ical_key,
+        )
+    return _rrule_to_jscal(rules[0], tzinfo)
+
+
 def _exdate_to_overrides(exdate_prop, tzinfo=None) -> dict:
     """Convert an EXDATE property (single or list) to recurrenceOverrides entries.
 
@@ -205,33 +237,66 @@ def _exdate_to_overrides(exdate_prop, tzinfo=None) -> dict:
     return overrides
 
 
+def _cal_address_to_imip_and_email(addr: str) -> tuple[str, str | None]:
+    """Split a CAL-ADDRESS value into its ``calendarAddress`` URI and, if it is one, its bare email.
+
+    ORGANIZER/ATTENDEE values are URIs (RFC 5545 §3.3.3) and are not
+    required to use the ``mailto:`` scheme (e.g. ``sip:alice@example.com``).
+    RFC 8984's Participant ``email`` property is specifically an
+    RFC 5322 addr-spec, not an arbitrary URI, so a non-mailto address is
+    kept as-is for ``calendarAddress`` (not double-wrapped in a spurious
+    ``mailto:``) and ``email`` is left unset rather than populated with a
+    value that isn't actually an email address.
+    """
+    if addr.startswith("mailto:"):
+        return addr, addr.removeprefix("mailto:")
+    if ":" in addr:
+        # Some other URI scheme (sip:, etc.); pass through as-is.
+        return addr, None
+    return f"mailto:{addr}", addr
+
+
 def _organizer_to_participant(organizer) -> tuple[str, dict]:
     """Convert an ORGANIZER property to a (participant_id, Participant dict) tuple."""
-    email = str(organizer).removeprefix("mailto:")
+    imip, email = _cal_address_to_imip_and_email(str(organizer))
     pid = str(uuid.uuid4())
     p: dict = {
         "roles": {"owner": True, "organizer": True},
-        "sendTo": {
-            "imip": str(organizer) if str(organizer).startswith("mailto:") else f"mailto:{email}"
-        },
+        # RFC 8984's own Participant object has no calendarAddress property;
+        # it belongs to JMAP Calendars' ParticipantIdentity/Principal objects
+        # instead, and sendTo (a map of delivery method to URI) is what
+        # RFC 8984 actually defines for this. Cyrus's CalendarEvent/set
+        # rejects sendTo outright with invalidProperties on both create and
+        # update, and separately requires calendarAddress, which RFC 8984
+        # does not define here at all. Verified live against a running Cyrus
+        # container: sendTo alone rejected, calendarAddress alone accepted,
+        # both present still rejected for sendTo. calendarAddress is set to
+        # sendTo's would-be "imip" value, its natural equivalent per
+        # ParticipantIdentity's own definition. sendTo itself is optional in
+        # RFC 8984, so omitting it is a real compatibility tradeoff, not a
+        # spec violation; Stalwart accepts calendarAddress-only fine too.
+        "calendarAddress": imip,
     }
     cn = organizer.params.get("CN")
     if cn:
         p["name"] = str(cn)
-    p["email"] = email
+    if email is not None:
+        p["email"] = email
     return pid, p
 
 
 def _attendee_to_participant(attendee) -> tuple[str, dict]:
     """Convert an ATTENDEE property to a (participant_id, Participant dict) tuple."""
-    addr = str(attendee)
-    email = addr.removeprefix("mailto:")
+    imip, email = _cal_address_to_imip_and_email(str(attendee))
     pid = str(uuid.uuid4())
     p: dict = {
         "roles": {"attendee": True},
-        "sendTo": {"imip": addr if addr.startswith("mailto:") else f"mailto:{email}"},
-        "email": email,
+        # See _organizer_to_participant for why calendarAddress is set
+        # instead of sendTo.
+        "calendarAddress": imip,
     }
+    if email is not None:
+        p["email"] = email
     cn = attendee.params.get("CN")
     if cn:
         p["name"] = str(cn)
@@ -478,17 +543,25 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
     if participants:
         jscal["participants"] = participants
 
-    rrules = master.get("RRULE")
-    if rrules is not None:
-        if not isinstance(rrules, list):
-            rrules = [rrules]
-        jscal["recurrenceRules"] = [_rrule_to_jscal(r, event_tzinfo) for r in rrules]
+    # RFC 8984 §4.3.3 defines "recurrenceRules" as RecurrenceRule[], since an
+    # event can in principle have more than one RRULE. Neither test server
+    # this repo targets actually implements that: Cyrus (pinned prodId
+    # "CyrusIMAP.org/Cyrus 3.13.7-545-gc04cece19") rejects the array outright
+    # with invalidProperties, and Stalwart's own CalendarEvent/get also
+    # returns the older singular "recurrenceRule" key, not the array,
+    # confirmed live against both. We follow both servers here, same as the
+    # "version" and calendarAddress/sendTo fixes: only the first RRULE is
+    # kept if more than one is present, which is a real but rare data-loss
+    # case (multiple RRULE lines on one VEVENT are uncommon in practice), so
+    # it's logged rather than silent or raised.
+    # Full recurrence override fidelity is its own separate M4 milestone item.
+    rule = _first_recurrence_rule(master, "RRULE", event_tzinfo)
+    if rule is not None:
+        jscal["recurrenceRule"] = rule
 
-    exrules = master.get("EXRULE")
-    if exrules is not None:
-        if not isinstance(exrules, list):
-            exrules = [exrules]
-        jscal["excludedRecurrenceRules"] = [_rrule_to_jscal(r, event_tzinfo) for r in exrules]
+    exrule = _first_recurrence_rule(master, "EXRULE", event_tzinfo)
+    if exrule is not None:
+        jscal["excludedRecurrenceRule"] = exrule
 
     recurrence_overrides: dict = {}
 
