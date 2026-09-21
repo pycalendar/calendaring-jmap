@@ -1171,6 +1171,11 @@ from calendaring_jmap._methods.event import parse_event_set
 from calendaring_jmap._methods.task import parse_task_set
 from calendaring_jmap.client import _JMAPClientBase
 
+#: A response entry for a method name no test here is looking for. Shared by
+#: every "skips/raises without a matching response in the batch" test below
+#: and in the get_availability test classes further down the file.
+_UNRELATED_RESPONSE: tuple[str, dict, str] = ("Calendar/changes", {}, "unrelated-0")
+
 
 class TestJMAPClientBaseParsers:
     """Direct unit tests for the response-fallthrough branches of each
@@ -1205,7 +1210,7 @@ class TestJMAPClientBaseParsers:
         }
         matching = ("CalendarEvent/get", {"list": [raw_event], "notFound": []}, "c1")
         result = _JMAPClientBase._parse_get_event_response(
-            [self._UNRELATED_RESPONSE, matching], api_url=_API_URL, event_id="ev1"
+            [_UNRELATED_RESPONSE, matching], api_url=_API_URL, event_id="ev1"
         )
         assert result.id == "ev1"
 
@@ -1237,12 +1242,10 @@ class TestJMAPClientBaseParsers:
         result = _JMAPClientBase._parse_event_changes_response([], api_url=_API_URL)
         assert result == ([], [], [], "")
 
-    _UNRELATED_RESPONSE: tuple[str, dict, str] = ("Calendar/changes", {}, "unrelated-0")
-
     def test_unsupported_null_keys_returns_none_without_match(self):
         assert (
             _JMAPClientBase._unsupported_null_keys(
-                [self._UNRELATED_RESPONSE], "ev1", patch={}, nulled=frozenset()
+                [_UNRELATED_RESPONSE], "ev1", patch={}, nulled=frozenset()
             )
             is None
         )
@@ -1255,7 +1258,7 @@ class TestJMAPClientBaseParsers:
         )
         assert (
             _JMAPClientBase._unsupported_null_keys(
-                [self._UNRELATED_RESPONSE, matching],
+                [_UNRELATED_RESPONSE, matching],
                 "ev1",
                 patch={"title": "x"},
                 nulled=frozenset(),
@@ -1265,9 +1268,7 @@ class TestJMAPClientBaseParsers:
 
     def test_parse_get_calendars_skips_unrelated_responses_in_batch(self):
         assert (
-            _JMAPClientBase._parse_get_calendars(
-                [self._UNRELATED_RESPONSE], client=None, is_async=False
-            )
+            _JMAPClientBase._parse_get_calendars([_UNRELATED_RESPONSE], client=None, is_async=False)
             == []
         )
 
@@ -1275,24 +1276,22 @@ class TestJMAPClientBaseParsers:
         for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
             with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
                 _JMAPClientBase._parse_create_response(
-                    [self._UNRELATED_RESPONSE], _API_URL, set_method, parse_set
+                    [_UNRELATED_RESPONSE], _API_URL, set_method, parse_set
                 )
 
     def test_parse_update_response_skips_unrelated_responses_in_batch(self):
         for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
             with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
                 _JMAPClientBase._parse_update_response(
-                    [self._UNRELATED_RESPONSE], _API_URL, set_method, parse_set, "id1"
+                    [_UNRELATED_RESPONSE], _API_URL, set_method, parse_set, "id1"
                 )
 
     def test_parse_search_response_skips_unrelated_responses_in_batch(self):
-        assert _JMAPClientBase._parse_search_response([self._UNRELATED_RESPONSE], parent=None) == []
+        assert _JMAPClientBase._parse_search_response([_UNRELATED_RESPONSE], parent=None) == []
 
     def test_parse_get_sync_token_response_skips_unrelated_responses_in_batch(self):
         with pytest.raises(JMAPMethodError, match="No CalendarEvent/get response"):
-            _JMAPClientBase._parse_get_sync_token_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL
-            )
+            _JMAPClientBase._parse_get_sync_token_response([_UNRELATED_RESPONSE], api_url=_API_URL)
 
     def test_parse_event_changes_response_skips_unrelated_responses_in_batch(self):
         result = _JMAPClientBase._parse_event_changes_response(
@@ -1304,16 +1303,16 @@ class TestJMAPClientBaseParsers:
         for set_method, parse_set in self._SET_METHODS_BY_OBJECT.items():
             with pytest.raises(JMAPMethodError, match=f"No {set_method} response"):
                 _JMAPClientBase._parse_delete_response(
-                    [self._UNRELATED_RESPONSE], _API_URL, set_method, parse_set, "id1"
+                    [_UNRELATED_RESPONSE], _API_URL, set_method, parse_set, "id1"
                 )
 
     def test_parse_get_task_lists_response_skips_unrelated_responses_in_batch(self):
-        assert _JMAPClientBase._parse_get_task_lists_response([self._UNRELATED_RESPONSE]) == []
+        assert _JMAPClientBase._parse_get_task_lists_response([_UNRELATED_RESPONSE]) == []
 
     def test_parse_get_task_response_skips_unrelated_responses_in_batch(self):
         with pytest.raises(JMAPMethodError, match="No Task/get response"):
             _JMAPClientBase._parse_get_task_response(
-                [self._UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
+                [_UNRELATED_RESPONSE], api_url=_API_URL, task_id="t1"
             )
 
     def test_assemble_sync_token_result_skips_unrelated_responses_in_batch(self):
@@ -1325,7 +1324,7 @@ class TestJMAPClientBaseParsers:
         }
         get_response = ("CalendarEvent/get", {"list": [raw_event], "notFound": []}, "c1")
         added, modified, deleted, token = _JMAPClientBase._assemble_sync_token_result(
-            [self._UNRELATED_RESPONSE, get_response], ["ev1"], [], [], "new-state"
+            [_UNRELATED_RESPONSE, get_response], ["ev1"], [], [], "new-state"
         )
         assert len(added) == 1
         assert added[0].id == "ev1"
@@ -4101,6 +4100,44 @@ class TestJMAPClientFreeBusy(_MockedClientMixin):
         assert result["user1"][0].start == "2026-09-21T10:00:00Z"
         assert result["user1"][0].end == "2026-09-21T11:00:00Z"
 
+    def test_get_availability_falls_back_when_capability_present_but_no_principal_id(
+        self, monkeypatch
+    ):
+        # Base capability present, but the account's own accountCapabilities
+        # entry has no currentUserPrincipalId, so there is nothing to call
+        # Principal/getAvailability with. This must go straight to the
+        # fallback rather than raising or calling with a None id.
+        caps = {"urn:ietf:params:jmap:principals": {}}
+        client = self._client_with_capabilities(caps)
+        self._mock_http(client, response=self._make_mock(self._query_get_response([])))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert result == {"user1": []}
+
+    def test_get_availability_via_principal_skips_unrelated_responses_in_batch(self, monkeypatch):
+        period = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "confirmed",
+            "event": None,
+        }
+        resp = {
+            "methodResponses": [
+                _UNRELATED_RESPONSE,
+                ["Principal/getAvailability", {"list": [period]}, "c1"],
+            ]
+        }
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._mock_http(client, response=self._make_mock(resp))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert result["user1"][0].busy_status == "confirmed"
+
+    def test_get_availability_via_principal_raises_without_matching_response(self, monkeypatch):
+        resp = {"methodResponses": [_UNRELATED_RESPONSE]}
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._mock_http(client, response=self._make_mock(resp))
+        with pytest.raises(JMAPMethodError, match="No Principal/getAvailability response"):
+            client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+
 
 class TestJMAPClientCalendars(_MockedClientMixin):
     def _set_response(self, **kwargs):
@@ -5572,6 +5609,53 @@ class TestAsyncJMAPClient:
         assert len(result["user1"]) == 1
         assert result["user1"][0].start == "2026-09-21T10:00:00Z"
         assert result["user1"][0].end == "2026-09-21T11:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_falls_back_when_capability_present_but_no_principal_id(
+        self, monkeypatch
+    ):
+        # Same case as the sync mirror: base capability present, but no
+        # currentUserPrincipalId to call Principal/getAvailability with.
+        caps = {"urn:ietf:params:jmap:principals": {}}
+        client = self._client_with_capabilities(caps)
+        self._patch_async_session(monkeypatch, self._query_get_resp([]))
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result == {"user1": []}
+
+    @pytest.mark.asyncio
+    async def test_get_availability_via_principal_skips_unrelated_responses_in_batch(
+        self, monkeypatch
+    ):
+        period = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "confirmed",
+            "event": None,
+        }
+        resp = {
+            "methodResponses": [
+                _UNRELATED_RESPONSE,
+                ["Principal/getAvailability", {"list": [period]}, "c1"],
+            ]
+        }
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._patch_async_session(monkeypatch, resp)
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result["user1"][0].busy_status == "confirmed"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_via_principal_raises_without_matching_response(
+        self, monkeypatch
+    ):
+        resp = {"methodResponses": [_UNRELATED_RESPONSE]}
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError, match="No Principal/getAvailability response"):
+            await client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
 
     @pytest.mark.asyncio
     async def test_get_sync_token_sends_empty_ids(self, monkeypatch):
