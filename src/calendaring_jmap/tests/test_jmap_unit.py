@@ -25,6 +25,7 @@ _USERNAME = "user1"
 _PASSWORD = "x"
 
 from calendaring_jmap.error import (
+    _DEFAULT_ERROR_TYPE,
     JMAPAuthError,
     JMAPBaseError,
     JMAPCapabilityError,
@@ -174,7 +175,13 @@ class TestJMAPErrorHierarchy:
 
     def test_jmap_error_default_error_type(self):
         e = JMAPError()
-        assert e.error_type == "serverError"
+        assert e.error_type == _DEFAULT_ERROR_TYPE
+
+    def test_default_error_type_is_a_real_rfc_8620_type(self):
+        """`_DEFAULT_ERROR_TYPE` used to be "serverError", which does not
+        appear anywhere in RFC 8620 section 3.6.2's error type list. Pins
+        it to one of the real generic types so this can't regress."""
+        assert _DEFAULT_ERROR_TYPE == "serverFail"
 
     def test_jmap_error_custom_error_type(self):
         e = JMAPError(error_type="unknownMethod")
@@ -851,6 +858,50 @@ class TestJMAPCalendarObject:
             obj.save()
 
 
+from calendaring_jmap.objects.busy_interval import BusyInterval
+
+
+class TestBusyInterval:
+    def test_from_jmap_full(self):
+        data = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "tentative",
+            "event": {"id": "ev1", "title": "Busy Block"},
+            "accountId": "user1",
+        }
+        interval = BusyInterval.from_jmap(data)
+        assert interval.start == "2026-09-21T10:00:00Z"
+        assert interval.end == "2026-09-21T11:00:00Z"
+        assert interval.busy_status == "tentative"
+        assert isinstance(interval.event, JMAPCalendarObject)
+        assert interval.event.get_data() == {"id": "ev1", "title": "Busy Block"}
+        assert interval.event.parent is None
+
+    def test_from_jmap_event_none(self):
+        data = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "event": None,
+        }
+        interval = BusyInterval.from_jmap(data)
+        assert interval.event is None
+
+    def test_from_jmap_busy_status_defaults_to_unavailable(self):
+        data = {"utcStart": "2026-09-21T10:00:00Z", "utcEnd": "2026-09-21T11:00:00Z"}
+        interval = BusyInterval.from_jmap(data)
+        assert interval.busy_status == "unavailable"
+
+    def test_from_jmap_ignores_unknown_keys(self):
+        data = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "someNewProperty": "value",
+        }
+        interval = BusyInterval.from_jmap(data)
+        assert interval.start == "2026-09-21T10:00:00Z"
+
+
 from calendaring_jmap._methods.calendar import (
     build_calendar_changes,
     build_calendar_get,
@@ -1513,6 +1564,20 @@ class TestEventMethodBuilders:
         assert "filter" not in args
         assert "sort" not in args
         assert "limit" not in args
+        assert "expandRecurrences" not in args
+        assert "timeZone" not in args
+
+    def test_build_event_query_with_expand_recurrences(self):
+        _, args, _ = build_event_query("u1", expand_recurrences=True)
+        assert args["expandRecurrences"] is True
+
+    def test_build_event_query_expand_recurrences_false_omits_key(self):
+        _, args, _ = build_event_query("u1", expand_recurrences=False)
+        assert "expandRecurrences" not in args
+
+    def test_build_event_query_with_time_zone(self):
+        _, args, _ = build_event_query("u1", time_zone="America/New_York")
+        assert args["timeZone"] == "America/New_York"
 
     def test_parse_event_query_returns_ids_state_total(self):
         response_args = {
@@ -1664,6 +1729,79 @@ def _make_ical(extra_lines: str = "", uid: str = "test-uid@example.com") -> str:
         "DTSTAMP:20240101T000000Z\r\n" + extra_lines + "END:VEVENT\r\n"
         "END:VCALENDAR\r\n"
     )
+
+
+from calendaring_jmap._methods.principal import build_get_availability, parse_get_availability
+
+
+class TestPrincipalMethodBuilders:
+    def test_build_get_availability_structure(self):
+        method, args, call_id = build_get_availability(
+            "principal1", "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z"
+        )
+        assert method == "Principal/getAvailability"
+        assert args["id"] == "principal1"
+        assert args["utcStart"] == "2024-01-01T00:00:00Z"
+        assert args["utcEnd"] == "2024-01-08T00:00:00Z"
+        assert isinstance(call_id, str)
+
+    def test_build_get_availability_has_no_account_id(self):
+        # Confirmed live against Cyrus: accountId in this method's own args
+        # dict fails with invalidArguments, even with a correct value.
+        _, args, _ = build_get_availability(
+            "principal1", "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z"
+        )
+        assert "accountId" not in args
+
+    def test_build_get_availability_no_optional_keys_when_not_set(self):
+        _, args, _ = build_get_availability(
+            "principal1", "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z"
+        )
+        assert "showDetails" not in args
+        assert "eventProperties" not in args
+
+    def test_build_get_availability_with_show_details(self):
+        _, args, _ = build_get_availability(
+            "principal1", "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z", show_details=True
+        )
+        assert args["showDetails"] is True
+
+    def test_build_get_availability_show_details_false_omits_key(self):
+        _, args, _ = build_get_availability(
+            "principal1", "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z", show_details=False
+        )
+        assert "showDetails" not in args
+
+    def test_build_get_availability_with_event_properties(self):
+        _, args, _ = build_get_availability(
+            "principal1",
+            "2024-01-01T00:00:00Z",
+            "2024-01-08T00:00:00Z",
+            event_properties=["id", "title"],
+        )
+        assert args["eventProperties"] == ["id", "title"]
+
+    def test_parse_get_availability_returns_busy_periods(self):
+        response_args = {
+            "list": [
+                {
+                    "utcStart": "2024-01-01T09:00:00Z",
+                    "utcEnd": "2024-01-01T10:00:00Z",
+                    "busyStatus": "confirmed",
+                    "event": None,
+                    "accountId": None,
+                }
+            ]
+        }
+        periods = parse_get_availability(response_args)
+        assert len(periods) == 1
+        assert periods[0]["busyStatus"] == "confirmed"
+
+    def test_parse_get_availability_empty_list(self):
+        assert parse_get_availability({"list": []}) == []
+
+    def test_parse_get_availability_missing_list_key(self):
+        assert parse_get_availability({}) == []
 
 
 def _minimal_jscal(**kwargs) -> dict:
@@ -3714,6 +3852,256 @@ class TestJMAPClientEvents(_MockedClientMixin):
         assert "filter" not in query_args
 
 
+def _availability_response(periods):
+    """Shared by the sync and async get_availability tests."""
+    return {
+        "methodResponses": [
+            ["Principal/getAvailability", {"list": periods}, "principal-getavailability-0"]
+        ]
+    }
+
+
+def _availability_error_response(error_type):
+    """Shared by the sync and async get_availability tests."""
+    return {"methodResponses": [["error", {"type": error_type}, "principal-getavailability-0"]]}
+
+
+class TestBusyIntervalFallbackConversion:
+    """Direct unit tests for the fallback path's LocalDateTime -> UTCDateTime
+    conversion, ensuring BusyInterval.start/.end have the same Z-suffixed
+    format the primary path (Principal/getAvailability) already returns,
+    regardless of which JSCalendar start shape (Etc/UTC, IANA timeZone,
+    floating) a fetched event happens to use."""
+
+    def test_etc_utc_timezone_passes_through_as_z_suffixed(self):
+        result = _JMAPClientBase._jscal_start_to_utc_datetime("2026-09-21T10:00:00", "Etc/UTC")
+        assert result == "2026-09-21T10:00:00Z"
+
+    def test_iana_timezone_is_converted_to_utc(self):
+        # America/New_York is UTC-4 (EDT) in September.
+        result = _JMAPClientBase._jscal_start_to_utc_datetime(
+            "2026-09-21T10:00:00", "America/New_York"
+        )
+        assert result == "2026-09-21T14:00:00Z"
+
+    def test_floating_time_is_treated_as_utc(self):
+        result = _JMAPClientBase._jscal_start_to_utc_datetime("2026-09-21T10:00:00", None)
+        assert result == "2026-09-21T10:00:00Z"
+
+    def test_already_z_suffixed_passes_through_unchanged(self):
+        result = _JMAPClientBase._jscal_start_to_utc_datetime("2026-09-21T10:00:00Z", None)
+        assert result == "2026-09-21T10:00:00Z"
+
+    def test_non_iana_tzid_falls_back_to_treated_as_utc(self):
+        result = _JMAPClientBase._jscal_start_to_utc_datetime(
+            "2026-09-21T10:00:00", "Eastern Standard Time"
+        )
+        assert result == "2026-09-21T10:00:00Z"
+
+    def test_busy_intervals_from_events_converts_timezone_aware_event(self):
+        events = [
+            {
+                "start": "2026-09-21T10:00:00",
+                "duration": "PT1H",
+                "timeZone": "America/New_York",
+                "freeBusyStatus": "busy",
+            }
+        ]
+        intervals = _JMAPClientBase._busy_intervals_from_events(events)
+        assert intervals[0].start == "2026-09-21T14:00:00Z"
+        assert intervals[0].end == "2026-09-21T15:00:00Z"
+
+    def test_busy_intervals_from_events_does_not_double_convert_z_suffixed_start(self):
+        """A Z-suffixed start alongside a timeZone is a malformed combination
+        this project's own iCal-to-JSCalendar writer never produces (UTC is
+        always start + timeZone="Etc/UTC" there, see ical_to_jscal.py), but a
+        server response is untrusted input: end must not have timeZone
+        applied a second time on top of an already-UTC start."""
+        events = [
+            {
+                "start": "2026-09-21T10:00:00Z",
+                "duration": "PT1H",
+                "timeZone": "America/New_York",
+                "freeBusyStatus": "busy",
+            }
+        ]
+        intervals = _JMAPClientBase._busy_intervals_from_events(events)
+        assert intervals[0].start == "2026-09-21T10:00:00Z"
+        assert intervals[0].end == "2026-09-21T11:00:00Z"
+
+
+class TestJMAPClientFreeBusy(_MockedClientMixin):
+    _PRINCIPALS_CAPS = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "user1"}}
+
+    def _client_with_capabilities(self, account_capabilities):
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(
+            api_url=_API_URL,
+            account_id=_USERNAME,
+            state="state-abc",
+            account_capabilities=account_capabilities,
+        )
+        return client
+
+    def _query_get_response(self, events):
+        return {
+            "methodResponses": [
+                ["CalendarEvent/query", {"ids": ["ev1"]}, "ev-query-0"],
+                [
+                    "CalendarEvent/get",
+                    {"accountId": _USERNAME, "list": events, "notFound": []},
+                    "ev-get-1",
+                ],
+            ]
+        }
+
+    def test_get_availability_uses_principal_getavailability_when_base_capability_present(
+        self, monkeypatch
+    ):
+        period = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "confirmed",
+            "event": None,
+        }
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._mock_http(client, response=self._make_mock(_availability_response([period])))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert result["user1"][0].start == "2026-09-21T10:00:00Z"
+        assert result["user1"][0].busy_status == "confirmed"
+
+    def test_get_availability_sends_principals_capability_and_utc_suffixed_dates(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        captured: dict = {}
+
+        def capturing_post(*args, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return self._make_mock(_availability_response([]))
+
+        self._mock_http(client, side_effect=capturing_post)
+        client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert "urn:ietf:params:jmap:principals" in captured["json"]["using"]
+        call_args = captured["json"]["methodCalls"][0][1]
+        assert call_args["utcStart"] == "2026-09-21T00:00:00Z"
+        assert call_args["utcEnd"] == "2026-09-22T00:00:00Z"
+        assert "accountId" not in call_args
+
+    def test_get_availability_skips_to_fallback_when_no_principals_capability(self, monkeypatch):
+        client = self._client_with_capabilities({})
+        self._mock_http(client, response=self._make_mock(self._query_get_response([])))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert result == {"user1": []}
+
+    def test_get_availability_falls_back_on_unknown_method(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        responses = iter(
+            [_availability_error_response("unknownMethod"), self._query_get_response([])]
+        )
+        self._mock_http(client, side_effect=lambda *a, **k: self._make_mock(next(responses)))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert result == {"user1": []}
+
+    def test_get_availability_falls_back_on_account_not_supported_by_method(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        responses = iter(
+            [
+                _availability_error_response("accountNotSupportedByMethod"),
+                self._query_get_response([]),
+            ]
+        )
+        self._mock_http(client, side_effect=lambda *a, **k: self._make_mock(next(responses)))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert result == {"user1": []}
+
+    def test_get_availability_propagates_real_errors_without_falling_back(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._mock_http(client, response=self._make_mock(_availability_error_response("forbidden")))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert exc_info.value.error_type == "forbidden"
+
+    def test_get_availability_resolves_own_principal_id_from_session(self, monkeypatch):
+        caps = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "principal-xyz"}}
+        client = self._client_with_capabilities(caps)
+        captured: dict = {}
+
+        def capturing_post(*args, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return self._make_mock(_availability_response([]))
+
+        self._mock_http(client, side_effect=capturing_post)
+        client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert captured["json"]["methodCalls"][0][1]["id"] == "principal-xyz"
+
+    def test_get_availability_multiple_account_ids_returns_dict(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._mock_http(client, response=self._make_mock(_availability_response([])))
+        result = client.get_availability(
+            ["user1", "user2"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert set(result.keys()) == {"user1", "user2"}
+
+    def test_get_availability_only_session_account_uses_principal_path(self, monkeypatch):
+        """Principal/getAvailability never carries an accountId (see
+        build_get_availability), so it can only ever report on the
+        session's own account ("user1" here). A second, different
+        account_id must always go through the fallback, which does scope
+        to an explicit accountId, rather than silently returning "user1"'s
+        own data again under a different key."""
+        principal_period = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "confirmed",
+            "event": None,
+        }
+        fallback_event = {
+            "start": "2026-09-21T14:00:00",
+            "duration": "PT1H",
+            "freeBusyStatus": "busy",
+        }
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+
+        def side_effect(*args, **kwargs):
+            method_calls = kwargs["json"]["methodCalls"]
+            if method_calls[0][0] == "Principal/getAvailability":
+                return self._make_mock(_availability_response([principal_period]))
+            return self._make_mock(self._query_get_response([fallback_event]))
+
+        self._mock_http(client, side_effect=side_effect)
+        result = client.get_availability(
+            ["user1", "user2"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result["user1"][0].start == "2026-09-21T10:00:00Z"
+        assert result["user2"][0].start == "2026-09-21T14:00:00Z"
+
+    def test_get_availability_fallback_uses_expand_recurrences(self, monkeypatch):
+        client = self._client_with_capabilities({})
+        captured: dict = {}
+
+        def capturing_post(*args, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return self._make_mock(self._query_get_response([]))
+
+        self._mock_http(client, side_effect=capturing_post)
+        client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["expandRecurrences"] is True
+        assert query_args["filter"]["after"] == "2026-09-21T00:00:00"
+        assert query_args["filter"]["before"] == "2026-09-22T00:00:00"
+
+    def test_get_availability_fallback_computes_intervals_from_events(self, monkeypatch):
+        events = [
+            {"start": "2026-09-21T10:00:00", "duration": "PT1H", "freeBusyStatus": "busy"},
+            {"start": "2026-09-22T10:00:00", "duration": "PT30M", "freeBusyStatus": "free"},
+        ]
+        client = self._client_with_capabilities({})
+        self._mock_http(client, response=self._make_mock(self._query_get_response(events)))
+        result = client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-23T00:00:00")
+        assert len(result["user1"]) == 1
+        assert result["user1"][0].start == "2026-09-21T10:00:00Z"
+        assert result["user1"][0].end == "2026-09-21T11:00:00Z"
+
+
 class TestJMAPClientCalendars(_MockedClientMixin):
     def _set_response(self, **kwargs):
         return {"methodResponses": [["Calendar/set", kwargs, "cal-set-create-0"]]}
@@ -4972,6 +5360,218 @@ class TestAsyncJMAPClient:
         await client.search_events()
         query_args = captured["json"]["methodCalls"][0][1]
         assert "filter" not in query_args
+
+    _PRINCIPALS_CAPS = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "user1"}}
+
+    def _client_with_capabilities(self, account_capabilities):
+        client = AsyncJMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(
+            api_url=_API_URL,
+            account_id=_USERNAME,
+            state="state-async",
+            account_capabilities=account_capabilities,
+        )
+        return client
+
+    def _capturing_async_session_for(self, monkeypatch, client, resp_json):
+        captured = {}
+        mock_resp = self._make_mock_response(resp_json)
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+
+        async def capturing_post(*args, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return mock_resp
+
+        mock_http.post = capturing_post
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_get_availability_uses_principal_getavailability_when_base_capability_present(
+        self, monkeypatch
+    ):
+        period = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "confirmed",
+            "event": None,
+        }
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._patch_async_session(monkeypatch, _availability_response([period]))
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result["user1"][0].start == "2026-09-21T10:00:00Z"
+        assert result["user1"][0].busy_status == "confirmed"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_sends_principals_capability_and_utc_suffixed_dates(
+        self, monkeypatch
+    ):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _availability_response([])
+        )
+        await client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert "urn:ietf:params:jmap:principals" in captured["json"]["using"]
+        call_args = captured["json"]["methodCalls"][0][1]
+        assert call_args["utcStart"] == "2026-09-21T00:00:00Z"
+        assert call_args["utcEnd"] == "2026-09-22T00:00:00Z"
+        assert "accountId" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_get_availability_skips_to_fallback_when_no_principals_capability(
+        self, monkeypatch
+    ):
+        client = self._client_with_capabilities({})
+        self._patch_async_session(monkeypatch, self._query_get_resp([]))
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result == {"user1": []}
+
+    @pytest.mark.asyncio
+    async def test_get_availability_falls_back_on_unknown_method(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        responses = iter([_availability_error_response("unknownMethod"), self._query_get_resp([])])
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+
+        async def side_effect(*args, **kwargs):
+            return self._make_mock_response(next(responses))
+
+        mock_http.post = side_effect
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result == {"user1": []}
+
+    @pytest.mark.asyncio
+    async def test_get_availability_falls_back_on_account_not_supported_by_method(
+        self, monkeypatch
+    ):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        responses = iter(
+            [
+                _availability_error_response("accountNotSupportedByMethod"),
+                self._query_get_resp([]),
+            ]
+        )
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+
+        async def side_effect(*args, **kwargs):
+            return self._make_mock_response(next(responses))
+
+        mock_http.post = side_effect
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result == {"user1": []}
+
+    @pytest.mark.asyncio
+    async def test_get_availability_propagates_real_errors_without_falling_back(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._patch_async_session(monkeypatch, _availability_error_response("forbidden"))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert exc_info.value.error_type == "forbidden"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_resolves_own_principal_id_from_session(self, monkeypatch):
+        caps = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "principal-xyz"}}
+        client = self._client_with_capabilities(caps)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _availability_response([])
+        )
+        await client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        assert captured["json"]["methodCalls"][0][1]["id"] == "principal-xyz"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_multiple_account_ids_returns_dict(self, monkeypatch):
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        self._patch_async_session(monkeypatch, _availability_response([]))
+        result = await client.get_availability(
+            ["user1", "user2"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert set(result.keys()) == {"user1", "user2"}
+
+    @pytest.mark.asyncio
+    async def test_get_availability_only_session_account_uses_principal_path(self, monkeypatch):
+        """See the sync mirror of this test for the full rationale: only
+        the session's own account ("user1") can use Principal/getAvailability;
+        a different account_id must always use the fallback."""
+        principal_period = {
+            "utcStart": "2026-09-21T10:00:00Z",
+            "utcEnd": "2026-09-21T11:00:00Z",
+            "busyStatus": "confirmed",
+            "event": None,
+        }
+        fallback_event = {
+            "id": "ev1",
+            "start": "2026-09-21T14:00:00",
+            "duration": "PT1H",
+            "freeBusyStatus": "busy",
+        }
+        client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+
+        async def side_effect(*args, **kwargs):
+            method_calls = kwargs["json"]["methodCalls"]
+            if method_calls[0][0] == "Principal/getAvailability":
+                return self._make_mock_response(_availability_response([principal_period]))
+            return self._make_mock_response(self._query_get_resp([fallback_event]))
+
+        mock_http.post = side_effect
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        result = await client.get_availability(
+            ["user1", "user2"], "2026-09-21T00:00:00", "2026-09-22T00:00:00"
+        )
+        assert result["user1"][0].start == "2026-09-21T10:00:00Z"
+        assert result["user2"][0].start == "2026-09-21T14:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_fallback_uses_expand_recurrences(self, monkeypatch):
+        client = self._client_with_capabilities({})
+        captured = self._capturing_async_session_for(monkeypatch, client, self._query_get_resp([]))
+        await client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["expandRecurrences"] is True
+        assert query_args["filter"]["after"] == "2026-09-21T00:00:00"
+        assert query_args["filter"]["before"] == "2026-09-22T00:00:00"
+
+    @pytest.mark.asyncio
+    async def test_get_availability_fallback_computes_intervals_from_events(self, monkeypatch):
+        events = [
+            {
+                "id": "ev1",
+                "start": "2026-09-21T10:00:00",
+                "duration": "PT1H",
+                "freeBusyStatus": "busy",
+            },
+            {
+                "id": "ev2",
+                "start": "2026-09-22T10:00:00",
+                "duration": "PT30M",
+                "freeBusyStatus": "free",
+            },
+        ]
+        client = self._client_with_capabilities({})
+        self._patch_async_session(monkeypatch, self._query_get_resp(events))
+        result = await client.get_availability(
+            ["user1"], "2026-09-21T00:00:00", "2026-09-23T00:00:00"
+        )
+        assert len(result["user1"]) == 1
+        assert result["user1"][0].start == "2026-09-21T10:00:00Z"
+        assert result["user1"][0].end == "2026-09-21T11:00:00Z"
 
     @pytest.mark.asyncio
     async def test_get_sync_token_sends_empty_ids(self, monkeypatch):

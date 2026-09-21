@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from calendaring_jmap._http import HTTPBasicAuth, HTTPBearerAuth, requests
 from calendaring_jmap._methods.calendar import (
@@ -37,6 +39,7 @@ from calendaring_jmap._methods.event import (
     parse_event_get,
     parse_event_set,
 )
+from calendaring_jmap._methods.principal import build_get_availability, parse_get_availability
 from calendaring_jmap._methods.task import (
     build_task_get,
     build_task_list_get,
@@ -47,16 +50,20 @@ from calendaring_jmap._methods.task import (
     parse_task_set,
 )
 from calendaring_jmap.constants import (
+    BUSY_STATUS_UNAVAILABLE,
     CALENDAR_CAPABILITY,
     CORE_CAPABILITY,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
     PARTICIPATION_STATUS_TENTATIVE,
+    PRINCIPALS_CAPABILITY,
     TASK_CAPABILITY,
 )
 from calendaring_jmap.convert import ical_to_jscal
 from calendaring_jmap.convert._patch import _NULL_FOR_UPDATE
-from calendaring_jmap.error import JMAPAuthError, JMAPMethodError
+from calendaring_jmap.convert._utils import _duration_to_timedelta
+from calendaring_jmap.error import _DEFAULT_ERROR_TYPE, JMAPAuthError, JMAPMethodError
+from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
 from calendaring_jmap.session import Session, fetch_session
@@ -65,6 +72,7 @@ log = logging.getLogger("calendaring_jmap")
 
 _DEFAULT_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY]
 _TASK_USING = [CORE_CAPABILITY, TASK_CAPABILITY]
+_PRINCIPALS_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY, PRINCIPALS_CAPABILITY]
 
 
 class _JMAPClientBase:
@@ -140,11 +148,63 @@ class _JMAPClientBase:
         return account_id if account_id is not None else session.account_id
 
     @staticmethod
+    def _supports_principals(session: Session) -> bool:
+        """Return whether this account advertises RFC 9670 Principal support.
+
+        This is the real gate for ``Principal/getAvailability``, not the
+        draft's own narrower ``:availability`` sub-capability: confirmed
+        live that Cyrus implements the method fully without ever
+        advertising that sub-capability, so checking for it would wrongly
+        skip Cyrus every time.
+        """
+        return PRINCIPALS_CAPABILITY in session.account_capabilities
+
+    @staticmethod
+    def _current_user_principal_id(session: Session) -> str | None:
+        """Return the caller's own Principal id from the session, if any.
+
+        RFC 9670 §1.5.1: ``currentUserPrincipalId`` is a property of the
+        ``urn:ietf:params:jmap:principals`` entry in ``accountCapabilities``.
+        No ``Principal/query``/``Principal/get`` call is needed for this.
+        """
+        return session.account_capabilities.get(PRINCIPALS_CAPABILITY, {}).get(
+            "currentUserPrincipalId"
+        )
+
+    @staticmethod
+    def _should_fall_back_to_query(error_type: str) -> bool:
+        """Return whether a ``Principal/getAvailability`` error means the
+        server doesn't support the method, as opposed to a real failure."""
+        return error_type in ("unknownMethod", "accountNotSupportedByMethod")
+
+    @staticmethod
+    def _can_use_principal_availability(session: Session, account_id: str) -> bool:
+        """Return whether ``get_availability`` may try the primary path for
+        ``account_id``.
+
+        ``Principal/getAvailability`` never carries an explicit ``accountId``
+        (confirmed live: Cyrus rejects one in this method's own args), so it
+        can only ever report on the session's own account. A different
+        ``account_id`` always needs the fallback, which does take an
+        explicit ``accountId``.
+        """
+        return account_id == session.account_id and _JMAPClientBase._supports_principals(session)
+
+    @staticmethod
+    def _as_utc_datetime(local_datetime: str) -> str:
+        """Convert one of ``get_availability``'s own UTC-treated
+        ``start``/``end`` strings to the ``UTCDateTime`` format
+        ``Principal/getAvailability`` requires. Confirmed live that Cyrus
+        rejects a bare, unsuffixed value here with ``invalidArguments``.
+        """
+        return f"{local_datetime}Z"
+
+    @staticmethod
     def _raise_set_error(api_url: str, err: dict) -> None:
         raise JMAPMethodError(
             url=api_url,
             reason=f"set failed: {err}",
-            error_type=err.get("type", "serverError"),
+            error_type=err.get("type", _DEFAULT_ERROR_TYPE),
         )
 
     @staticmethod
@@ -181,6 +241,90 @@ class _JMAPClientBase:
             "ev-get-1",
         )
         return [query_call, get_call]
+
+    @staticmethod
+    def _build_availability_fallback_calls(account_id: str, start: str, end: str) -> list[tuple]:
+        """Return a batched [CalendarEvent/query, CalendarEvent/get] call list
+        for computing availability client-side, for servers without
+        ``Principal/getAvailability`` support.
+
+        ``expandRecurrences`` is always on: without it, a recurring series
+        is found by the ``after``/``before`` filter but returned as one
+        object carrying only the master occurrence's own ``start``, not
+        whichever occurrence(s) actually fall in the window (confirmed live
+        against both Cyrus and Stalwart). ``start``/``end`` must be
+        ``LocalDateTime`` (no ``Z``/UTC suffix); confirmed live that Cyrus
+        rejects a ``Z``-suffixed value here with ``invalidArguments``.
+        """
+        query_call = build_event_query(
+            account_id,
+            filter_condition={"after": start, "before": end},
+            expand_recurrences=True,
+        )
+        get_call = (
+            "CalendarEvent/get",
+            {
+                "accountId": account_id,
+                "#ids": {
+                    "resultOf": "ev-query-0",
+                    "name": "CalendarEvent/query",
+                    "path": "/ids",
+                },
+                "properties": ["start", "duration", "freeBusyStatus", "timeZone"],
+            },
+            "ev-get-1",
+        )
+        return [query_call, get_call]
+
+    @staticmethod
+    def _jscal_start_to_utc_datetime(start: str, time_zone: str | None) -> str:
+        """Convert a JSCalendar ``start``/``timeZone`` pair to a ``Z``-suffixed
+        ``UTCDateTime`` string, matching what ``Principal/getAvailability``
+        returns, so ``BusyInterval.start``/``.end`` have one consistent
+        format regardless of which path produced them (RFC 8984's own three
+        ``start`` shapes: already ``Z``-suffixed UTC, ``timeZone``-qualified,
+        or floating/naive with neither, see ``jscal_to_ical._start_to_dtstart``).
+        A floating start (no ``timeZone``) has no true UTC equivalent; it is
+        treated as UTC, matching ``get_availability``'s own documented
+        treatment of its ``start``/``end`` window parameters.
+        """
+        if start.endswith("Z"):
+            return start
+        naive = datetime.fromisoformat(start)
+        if time_zone:
+            try:
+                naive = naive.replace(tzinfo=ZoneInfo(time_zone))
+            except ZoneInfoNotFoundError:
+                # Non-IANA TZID: no way to resolve an offset, fall through
+                # and treat it as UTC like a floating time.
+                pass
+        if naive.tzinfo is not None:
+            naive = naive.astimezone(timezone.utc)
+        return naive.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @classmethod
+    def _busy_intervals_from_events(cls, events: list[dict]) -> list[BusyInterval]:
+        """Compute BusyInterval objects from raw event dicts for the fallback path.
+
+        RFC 8984 §4.4.2: ``freeBusyStatus`` is ``"free"`` or ``"busy"``,
+        default ``"busy"`` when absent. Events marked ``"free"`` don't
+        count toward busy time.
+        """
+        intervals = []
+        for event in events:
+            if event.get("freeBusyStatus", "busy") == "free":
+                continue
+            duration = _duration_to_timedelta(event.get("duration", "PT0S"))
+            # Resolve start to UTC first, then add the duration: adding the
+            # duration to the still-local start and converting that would
+            # re-apply timeZone to a value already made UTC by a Z-suffixed
+            # start, double-converting it.
+            start = cls._jscal_start_to_utc_datetime(event["start"], event.get("timeZone"))
+            end_dt = datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ") + duration
+            end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            interval = BusyInterval(start=start, end=end, busy_status=BUSY_STATUS_UNAVAILABLE)
+            intervals.append(interval)
+        return intervals
 
     @staticmethod
     def _build_event_update_patch(ical_str: str) -> tuple[dict, frozenset[str]]:
@@ -560,7 +704,7 @@ class JMAPClient(_JMAPClientBase):
         for resp in method_responses:
             method_name, resp_args, call_id = resp
             if method_name == "error":
-                error_type = resp_args.get("type", "serverError")
+                error_type = resp_args.get("type", _DEFAULT_ERROR_TYPE)
                 raise JMAPMethodError(
                     url=session.api_url,
                     reason=f"Method call failed: {resp_args}",
@@ -1043,6 +1187,103 @@ class JMAPClient(_JMAPClientBase):
         return self._search(
             calendar_id=calendar_id, start=start, end=end, text=text, account_id=account_id
         )
+
+    def get_availability(
+        self,
+        account_ids: list[str],
+        start: str,
+        end: str,
+        show_details: bool = False,
+    ) -> dict[str, list[BusyInterval]]:
+        """Return busy intervals for each of your own accounts over a time period.
+
+        Tries ``Principal/getAvailability`` (draft-ietf-jmap-calendars
+        section 2.2) first, using the current user's own Principal id (from
+        the session, no extra round trip). Falls back per account to a
+        ``CalendarEvent/query`` scan of that account's own calendars when
+        the account doesn't advertise RFC 9670 Principal support at all, the
+        call fails with ``unknownMethod``/``accountNotSupportedByMethod``, or
+        ``account_id`` isn't the session's own account.
+
+        ``Principal/getAvailability`` never carries an explicit ``accountId``
+        (confirmed live: Cyrus rejects one in this method's own args), so it
+        can only ever report on the session's own account; any other entry
+        in ``account_ids`` always goes through the fallback, which does
+        scope to an explicit account. Only ever reports your own
+        availability, never another user's: checking someone else's by
+        email would need resolving that email to a Principal id via
+        ``Principal/query``, which this client doesn't implement yet (the
+        same limitation :meth:`share_calendar` already has for Principal
+        ids in general).
+
+        Args:
+            account_ids: JMAP accounts to check, one entry in the result per
+                account. Only the session's own account can use the primary
+                path; other accounts always use the fallback.
+            start: Start of the period, inclusive (``YYYY-MM-DDTHH:MM:SS``,
+                treated as UTC; matches :meth:`search_events`'s convention).
+            end: End of the period, exclusive (``YYYY-MM-DDTHH:MM:SS``,
+                treated as UTC).
+            show_details: If true, populate each interval's ``event`` where
+                permitted. Confirmed live: on Stalwart this needs the
+                account's server to support returning event details at all;
+                omitting ``eventProperties`` there returns ``event: None``
+                even with ``show_details=True``. On Cyrus, details are
+                returned by default.
+
+        Returns:
+            Dict mapping each account id to its list of
+            :class:`~calendaring_jmap.objects.busy_interval.BusyInterval` objects.
+
+        Raises:
+            JMAPMethodError: If ``Principal/getAvailability`` fails for a
+                reason other than lack of support (e.g. ``forbidden``,
+                ``tooLarge``), or if the fallback's ``CalendarEvent/query``
+                fails (e.g. ``expandDurationTooLarge``, ``cannotCalculateOccurrences``
+                for a window with too many recurrence instances to expand).
+        """
+        session = self._get_session()
+        result: dict[str, list[BusyInterval]] = {}
+        for account_id in account_ids:
+            if self._can_use_principal_availability(session, account_id):
+                principal_id = self._current_user_principal_id(session)
+                if principal_id is not None:
+                    try:
+                        result[account_id] = self._get_availability_via_principal(
+                            principal_id, start, end, show_details
+                        )
+                        continue
+                    except JMAPMethodError as e:
+                        if not self._should_fall_back_to_query(e.error_type):
+                            raise
+            result[account_id] = self._get_availability_via_fallback(account_id, start, end)
+        return result
+
+    def _get_availability_via_principal(
+        self, principal_id: str, start: str, end: str, show_details: bool
+    ) -> list[BusyInterval]:
+        session = self._get_session()
+        call = build_get_availability(
+            principal_id,
+            self._as_utc_datetime(start),
+            self._as_utc_datetime(end),
+            show_details=show_details,
+        )
+        responses = self._request([call], using=_PRINCIPALS_USING)
+        for method_name, resp_args, _ in responses:
+            if method_name == "Principal/getAvailability":
+                return [BusyInterval.from_jmap(bp) for bp in parse_get_availability(resp_args)]
+        raise JMAPMethodError(url=session.api_url, reason="No Principal/getAvailability response")
+
+    def _get_availability_via_fallback(
+        self, account_id: str, start: str, end: str
+    ) -> list[BusyInterval]:
+        calls = self._build_availability_fallback_calls(account_id, start, end)
+        responses = self._request(calls)
+        for method_name, resp_args, _ in responses:
+            if method_name == "CalendarEvent/get":
+                return self._busy_intervals_from_events(parse_event_get(resp_args))
+        return []
 
     def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.

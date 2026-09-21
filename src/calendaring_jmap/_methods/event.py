@@ -112,19 +112,35 @@ def build_event_query(
     sort: list[dict] | None = None,
     position: int = 0,
     limit: int | None = None,
+    expand_recurrences: bool = False,
+    time_zone: str | None = None,
 ) -> tuple:
     """Build a ``CalendarEvent/query`` method call tuple.
 
     Args:
         account_id: The JMAP accountId to query.
         filter_condition: A ``FilterCondition`` or ``FilterOperator`` dict, e.g.
-            ``{"after": "2024-01-01T00:00:00Z", "before": "2024-12-31T23:59:59Z"}``.
-            ``None`` means no filter (return all events).
+            ``{"after": "2024-01-01T00:00:00", "before": "2024-12-31T23:59:59"}``.
+            ``after``/``before`` are ``LocalDateTime`` (no ``Z``/UTC suffix;
+            confirmed live against Cyrus, which rejects a ``Z``-suffixed
+            value with ``invalidArguments``). ``None`` means no filter
+            (return all events).
         sort: List of ``Comparator`` dicts, e.g.
             ``[{"property": "start", "isAscending": True}]``.
             ``None`` means server default ordering.
         position: Zero-based index of the first result to return.
         limit: Maximum number of IDs to return. ``None`` means no limit.
+        expand_recurrences: If true, the server returns one synthetic id per
+            matching occurrence of a recurring event instead of a single id
+            for the whole series (JMAP Calendars §5.11). ``filter_condition``
+            must then include both ``after`` and ``before``, or the server
+            rejects the call with ``invalidArguments`` (confirmed live).
+            Without this, a recurring series is still found by ``after``/
+            ``before`` but returned as one object carrying only the master
+            occurrence's own ``start``, not whichever occurrence(s) actually
+            fall in the window.
+        time_zone: The time zone for ``after``/``before``, defaults to
+            ``Etc/UTC`` server-side if omitted.
 
     Returns:
         A 3-tuple ``("CalendarEvent/query", arguments_dict, call_id)``.
@@ -136,6 +152,10 @@ def build_event_query(
         args["sort"] = sort
     if limit is not None:
         args["limit"] = limit
+    if expand_recurrences:
+        args["expandRecurrences"] = expand_recurrences
+    if time_zone is not None:
+        args["timeZone"] = time_zone
     return ("CalendarEvent/query", args, "ev-query-0")
 
 
