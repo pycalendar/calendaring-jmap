@@ -44,8 +44,10 @@ from calendaring_jmap._methods.event import (
     build_event_set_create,
     build_event_set_destroy,
     build_event_set_update,
+    parse_event_get,
     parse_event_set,
 )
+from calendaring_jmap._methods.principal import build_get_availability, parse_get_availability
 from calendaring_jmap._methods.task import (
     build_task_get,
     build_task_list_get,
@@ -54,14 +56,15 @@ from calendaring_jmap._methods.task import (
     build_task_set_update,
     parse_task_set,
 )
-from calendaring_jmap.client import _DEFAULT_USING, _TASK_USING, _JMAPClientBase
+from calendaring_jmap.client import _DEFAULT_USING, _PRINCIPALS_USING, _TASK_USING, _JMAPClientBase
 from calendaring_jmap.constants import (
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
     PARTICIPATION_STATUS_TENTATIVE,
 )
 from calendaring_jmap.convert import ical_to_jscal
-from calendaring_jmap.error import JMAPAuthError, JMAPMethodError
+from calendaring_jmap.error import _DEFAULT_ERROR_TYPE, JMAPAuthError, JMAPMethodError
+from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
 from calendaring_jmap.session import Session, async_fetch_session
@@ -198,7 +201,7 @@ class AsyncJMAPClient(_JMAPClientBase):
         for resp in method_responses:
             method_name, resp_args, call_id = resp
             if method_name == "error":
-                error_type = resp_args.get("type", "serverError")
+                error_type = resp_args.get("type", _DEFAULT_ERROR_TYPE)
                 raise JMAPMethodError(
                     url=session.api_url,
                     reason=f"Method call failed: {resp_args}",
@@ -663,6 +666,60 @@ class AsyncJMAPClient(_JMAPClientBase):
         return await self._search(
             calendar_id=calendar_id, start=start, end=end, text=text, account_id=account_id
         )
+
+    async def get_availability(
+        self,
+        account_ids: list[str],
+        start: str,
+        end: str,
+        show_details: bool = False,
+    ) -> dict[str, list[BusyInterval]]:
+        """Return busy intervals for each of your own accounts over a time period.
+
+        See :meth:`JMAPClient.get_availability` for the full semantics.
+        """
+        session = await self._get_session()
+        result: dict[str, list[BusyInterval]] = {}
+        for account_id in account_ids:
+            if self._can_use_principal_availability(session, account_id):
+                principal_id = self._current_user_principal_id(session)
+                if principal_id is not None:
+                    try:
+                        result[account_id] = await self._get_availability_via_principal(
+                            principal_id, start, end, show_details
+                        )
+                        continue
+                    except JMAPMethodError as e:
+                        if not self._should_fall_back_to_query(e.error_type):
+                            raise
+            result[account_id] = await self._get_availability_via_fallback(account_id, start, end)
+        return result
+
+    async def _get_availability_via_principal(
+        self, principal_id: str, start: str, end: str, show_details: bool
+    ) -> list[BusyInterval]:
+        session = await self._get_session()
+        call = build_get_availability(
+            principal_id,
+            self._as_utc_datetime(start),
+            self._as_utc_datetime(end),
+            show_details=show_details,
+        )
+        responses = await self._request([call], using=_PRINCIPALS_USING)
+        for method_name, resp_args, _ in responses:
+            if method_name == "Principal/getAvailability":
+                return [BusyInterval.from_jmap(bp) for bp in parse_get_availability(resp_args)]
+        raise JMAPMethodError(url=session.api_url, reason="No Principal/getAvailability response")
+
+    async def _get_availability_via_fallback(
+        self, account_id: str, start: str, end: str
+    ) -> list[BusyInterval]:
+        calls = self._build_availability_fallback_calls(account_id, start, end)
+        responses = await self._request(calls)
+        for method_name, resp_args, _ in responses:
+            if method_name == "CalendarEvent/get":
+                return self._busy_intervals_from_events(parse_event_get(resp_args))
+        return []
 
     async def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.

@@ -96,6 +96,31 @@ def _minimal_ical(title: str = "Test Event", start: datetime | None = None) -> s
     )
 
 
+def _recurring_ical(
+    rrule: str,
+    title: str = "Recurring Test Event",
+    start: datetime | None = None,
+    duration: timedelta = timedelta(hours=1),
+) -> str:
+    if start is None:
+        start = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    end = start + duration
+    uid = str(uuid.uuid4())
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//test//test//EN\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        f"SUMMARY:{title}\r\n"
+        f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"RRULE:{rrule}\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+
 def _invite_ical(
     organizer_email: str,
     attendee_email: str,
@@ -780,13 +805,10 @@ class TestJMAPEventIntegration:
         """Neither test server accepts RFC 8984's recurrenceRules array; both
         want the singular recurrenceRule instead (see ical_to_jscal.py). This
         is the only integration coverage for recurring events at all."""
-        ical = (
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\n"
-            f"BEGIN:VEVENT\r\nUID:{uuid.uuid4()}\r\n"
-            "SUMMARY:Weekly Standup\r\n"
-            "DTSTART:20260701T100000Z\r\nDTEND:20260701T110000Z\r\n"
-            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR\r\n"
-            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        ical = _recurring_ical(
+            "FREQ=WEEKLY;BYDAY=MO,WE,FR",
+            title="Weekly Standup",
+            start=datetime(2026, 7, 1, 10, 0, 0, tzinfo=timezone.utc),
         )
         event_id = event_client.create_event(event_calendar_id, ical)
         try:
@@ -815,6 +837,102 @@ class TestJMAPEventIntegration:
             fetched = jscal_to_ical(event_client.get_event(event_id).get_data())
             assert "Roundtrip Event" in fetched
             assert "20260715" in fetched
+        finally:
+            event_client.delete_event(event_id)
+
+
+@_sync_servers
+class TestJMAPFreeBusyIntegration:
+    """Confirmed live (both servers, this repo's own verification, not just
+    the spec text) that Principal/getAvailability genuinely works on both
+    Cyrus and Stalwart, so these tests exercise the real primary path, not
+    the fallback. Neither test server lacks the base
+    urn:ietf:params:jmap:principals capability. The fallback path's own
+    mechanism (expandRecurrences) is proven correct in
+    test_fallback_recurring_event_busy_intervals below by calling the
+    private fallback helper directly, since there is no live server in this
+    project's own test fixtures that actually takes that path by default."""
+
+    def test_get_availability_empty_when_no_events(self, event_client, server):
+        session = event_client._get_session()
+        availability = event_client.get_availability(
+            [session.account_id], "2026-09-19T00:00:00", "2026-09-20T00:00:00"
+        )
+        assert availability == {session.account_id: []}, f"{server}: expected no busy intervals"
+
+    def test_get_availability_returns_busy_interval_for_event(
+        self, event_client, event_calendar_id, server
+    ):
+        start = datetime(2026, 9, 21, 10, 0, 0, tzinfo=timezone.utc)
+        session = event_client._get_session()
+        event_id = event_client.create_event(
+            event_calendar_id, _minimal_ical("Availability Test Event", start=start)
+        )
+        try:
+            availability = event_client.get_availability(
+                [session.account_id], "2026-09-19T00:00:00", "2026-09-26T00:00:00"
+            )
+            intervals = availability[session.account_id]
+            assert len(intervals) == 1, f"{server}: expected exactly one busy interval"
+            assert intervals[0].start == "2026-09-21T10:00:00Z"
+            assert intervals[0].end == "2026-09-21T11:00:00Z"
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_get_availability_show_details(self, event_client, event_calendar_id, server):
+        """Confirmed live: Cyrus returns full event details by default with
+        show_details=True. Stalwart does not, since it additionally
+        requires eventProperties to be set to one of its own narrow
+        supported set, which get_availability doesn't currently pass; on
+        Stalwart, event stays None even with show_details=True. Both
+        behaviors are correct per this method's own documented contract."""
+        title = "Details Test Event"
+        start = datetime(2026, 9, 21, 14, 0, 0, tzinfo=timezone.utc)
+        session = event_client._get_session()
+        event_id = event_client.create_event(event_calendar_id, _minimal_ical(title, start=start))
+        try:
+            availability = event_client.get_availability(
+                [session.account_id],
+                "2026-09-19T00:00:00",
+                "2026-09-26T00:00:00",
+                show_details=True,
+            )
+            interval = availability[session.account_id][0]
+            if server == "cyrus":
+                assert interval.event is not None, f"{server}: expected event details"
+                assert interval.event.get_data()["title"] == title
+            else:
+                assert interval.event is None, f"{server}: expected no event details"
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_fallback_recurring_event_busy_intervals(self, event_client, event_calendar_id, server):
+        """Proves the fallback path's expandRecurrences mechanism directly,
+        by calling its private helper: neither test server actually takes
+        the fallback path through get_availability's own public entry point
+        (both implement Principal/getAvailability), so this is the only way
+        to give this mechanism live coverage. Without expandRecurrences,
+        a recurring series returns one interval carrying only the master
+        occurrence's own start, not the occurrences that actually fall in
+        the window. Confirmed live during this feature's own planning."""
+        ical = _recurring_ical(
+            "FREQ=WEEKLY",
+            title="Weekly Fallback Availability Test",
+            start=datetime(2026, 9, 21, 9, 0, 0, tzinfo=timezone.utc),
+            duration=timedelta(minutes=30),
+        )
+        session = event_client._get_session()
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            intervals = event_client._get_availability_via_fallback(
+                session.account_id, "2026-09-19T00:00:00", "2026-10-10T00:00:00"
+            )
+            starts = sorted(i.start for i in intervals)
+            assert starts == [
+                "2026-09-21T09:00:00Z",
+                "2026-09-28T09:00:00Z",
+                "2026-10-05T09:00:00Z",
+            ], f"{server}: expected one distinct busy interval per weekly occurrence"
         finally:
             event_client.delete_event(event_id)
 
@@ -881,5 +999,25 @@ class TestAsyncJMAPEventIntegration:
             fetched = jscal_to_ical((await async_client.get_event(event_id)).get_data())
             assert "Async Roundtrip Event" in fetched
             assert "20260715" in fetched
+        finally:
+            await async_client.delete_event(event_id)
+
+    @pytest.mark.asyncio
+    async def test_get_availability_returns_busy_interval_for_event(
+        self, async_client, async_calendar_id
+    ):
+        start = datetime(2026, 9, 21, 10, 0, 0, tzinfo=timezone.utc)
+        session = await async_client._get_session()
+        event_id = await async_client.create_event(
+            async_calendar_id, _minimal_ical("Async Availability Test Event", start=start)
+        )
+        try:
+            availability = await async_client.get_availability(
+                [session.account_id], "2026-09-19T00:00:00", "2026-09-26T00:00:00"
+            )
+            intervals = availability[session.account_id]
+            assert len(intervals) == 1
+            assert intervals[0].start == "2026-09-21T10:00:00Z"
+            assert intervals[0].end == "2026-09-21T11:00:00Z"
         finally:
             await async_client.delete_event(event_id)

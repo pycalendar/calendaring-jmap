@@ -14,6 +14,11 @@ compatibility hook when it's present.
 
 from __future__ import annotations
 
+#: Fallback ``error_type`` used when a server's error response omits its
+#: own ``"type"`` field. Not itself a real RFC 8620 §3.6.2 error type, just
+#: this package's own default for a nonconformant response.
+_DEFAULT_ERROR_TYPE = "serverFail"
+
 try:
     from caldav.lib.error import AuthorizationError as _CaldavAuthorizationError
     from caldav.lib.error import DAVError as _CaldavDAVError
@@ -49,7 +54,7 @@ class JMAPError(JMAPBaseError):
     (e.g. ``"unknownMethod"``, ``"invalidArguments"``).
     """
 
-    error_type: str = "serverError"
+    error_type: str = _DEFAULT_ERROR_TYPE
 
     def __init__(
         self,
@@ -93,21 +98,23 @@ class JMAPAuthError(_CaldavAuthorizationError, JMAPError):
 class JMAPMethodError(JMAPError):
     """A JMAP method call returned an error response.
 
-    RFC 8620 §3.6.2 error types that may be set as ``error_type``:
+    RFC 8620 §3.6.2 generic error types that may be set as ``error_type``:
 
-    - ``serverError``             — unexpected server-side error
-    - ``unknownMethod``           — method name not recognised
-    - ``invalidArguments``        — bad argument types or values
-    - ``invalidResultReference``  — bad ``#result`` reference
-    - ``forbidden``               — not allowed to perform this call
-    - ``accountNotFound``         — ``accountId`` does not exist
-    - ``accountNotSupportedByMethod`` — account lacks needed capability
-    - ``accountReadOnly``         — account is read-only
-    - ``requestTooLarge``         — request exceeds server limits
-    - ``stateMismatch``           — ``ifInState`` check failed
-    - ``serverPartialFail``       — partial failure; some calls succeeded
-    - ``notFound``                — requested object does not exist
-    - ``notDraft``                — object is not in draft state
+    - ``serverUnavailable``: temporary, retrying later may succeed
+    - ``serverFail``: unexpected server-side error (default here, used
+      when the server's response omits ``type`` entirely)
+    - ``serverPartialFail``: partial failure, some calls succeeded
+    - ``unknownMethod``: method name not recognised
+    - ``invalidArguments``: bad argument types or values
+    - ``invalidResultReference``: bad ``#result`` reference
+    - ``forbidden``: not allowed to perform this call
+    - ``accountNotFound``: ``accountId`` does not exist
+    - ``accountNotSupportedByMethod``: account lacks needed capability
+    - ``accountReadOnly``: account is read-only
+
+    Individual methods define further, method-specific error types beyond
+    this generic set (e.g. ``notFound``, ``calendarHasEvent``,
+    ``expandDurationTooLarge``); see each method builder's own docstring.
     """
 
-    error_type = "serverError"
+    error_type = _DEFAULT_ERROR_TYPE
