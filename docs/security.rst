@@ -25,7 +25,7 @@ calendaring-jmap only corrects ``apiUrl`` when it names the same host as the ses
 TLS and credentials
 -------------------
 
-calendaring-jmap does no custom TLS handling: it relies entirely on its HTTP library (niquests or requests, see :ref:`dependencies`) for certificate verification, and doesn't expose an option to disable it.
+calendaring-jmap does no custom TLS handling: it relies entirely on its HTTP library (niquests, or requests as a fallback, see :ref:`dependencies`) for certificate verification, and doesn't expose an option to disable it.
 
 Credentials are read from explicit arguments, ``JMAP_URL``/``JMAP_USERNAME``/``JMAP_PASSWORD`` environment variables, or a YAML config file (default ``~/.config/calendaring-jmap/calendar.yaml``). The config file is stored and read as plaintext; set restrictive file permissions on it (for example, ``chmod 600``) if you use it.
 
@@ -43,4 +43,4 @@ Calendar data can contain personal information (names, locations, meeting conten
 Dependencies
 ============
 
-calendaring-jmap depends on `niquests <https://pypi.org/project/niquests/>`_ or `requests <https://pypi.org/project/requests/>`_ for HTTP, `icalendar <https://pypi.org/project/icalendar/>`_ for iCalendar parsing, and `PyYAML <https://pypi.org/project/PyYAML/>`_ for config file loading (via ``yaml.safe_load``, which doesn't execute arbitrary code). See ``pyproject.toml`` for the current version constraints.
+calendaring-jmap depends on `niquests <https://pypi.org/project/niquests/>`_ for HTTP, `icalendar <https://pypi.org/project/icalendar/>`_ for iCalendar parsing, and `PyYAML <https://pypi.org/project/PyYAML/>`_ for config file loading (via ``yaml.safe_load``, which doesn't execute arbitrary code). `requests <https://pypi.org/project/requests/>`_ is an optional fallback (the ``requests`` extra) for environments where niquests isn't available; async support additionally needs niquests's own ``asyncio`` extra. See ``pyproject.toml`` for the current version constraints.

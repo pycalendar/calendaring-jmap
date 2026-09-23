@@ -14,7 +14,7 @@ Install the package
 
     pip install calendaring-jmap
 
-Not yet published to PyPI. See :doc:`../how-to/install` for installing from source.
+See :doc:`../how-to/install` for installing from a source checkout instead.
 
 Create a client
 ===============

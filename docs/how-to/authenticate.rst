@@ -5,7 +5,7 @@
 Authenticate
 ============
 
-:func:`~calendaring_jmap.get_jmap_client` reads configuration from, in order: explicit keyword arguments, the ``JMAP_URL``/``JMAP_USERNAME``/``JMAP_PASSWORD`` environment variables, then a YAML config file. If none of those are set, it returns ``None``.
+:func:`~calendaring_jmap.get_jmap_client` reads configuration from, in order: explicit keyword arguments, environment variables, then a YAML config file. If none of those are set, it returns ``None``.
 
 Use environment variables or a config file
 ==========================================
@@ -17,14 +17,20 @@ Environment variables:
     export JMAP_URL=https://jmap.example.com/.well-known/jmap
     export JMAP_USERNAME=alice
     export JMAP_PASSWORD=secret
+    export JMAP_AUTH_TYPE=basic
+    export JMAP_TIMEOUT=30
 
-Or a YAML config file, at ``~/.config/calendaring-jmap/calendar.yaml`` by default, or a path passed as ``config_file``:
+``JMAP_URL``, ``JMAP_USERNAME``, and ``JMAP_PASSWORD`` map directly to :func:`~calendaring_jmap.get_jmap_client`'s own ``url``/``username``/``password`` arguments. ``JMAP_AUTH_TYPE`` (``basic`` or ``bearer``) forces the auth type instead of inferring it; ``JMAP_TIMEOUT`` sets the request timeout in seconds. Both are optional.
+
+Or a YAML config file, at ``~/.config/calendaring-jmap/calendar.yaml`` by default:
 
 .. code-block:: yaml
 
     url: https://jmap.example.com/.well-known/jmap
     username: alice
     password: secret
+
+Override the config file's location with the ``JMAP_CONFIG_FILE`` environment variable, or by passing ``config_file`` directly to :func:`~calendaring_jmap.get_jmap_client`.
 
 With either in place, no arguments are needed:
 

@@ -35,10 +35,10 @@ Create a task
         task_list_id,
         title="Review pull request",
         due="2026-02-15T17:00:00",
-        time_zone="Europe/Oslo",
+        timeZone="Europe/Oslo",
     )
 
-Optional keyword arguments for :meth:`~calendaring_jmap.client.JMAPClient.create_task`: ``description``, ``start``, ``due``, ``time_zone``, ``estimated_duration``, ``percent_complete``, ``progress``, ``priority``.
+Optional keyword arguments for :meth:`~calendaring_jmap.client.JMAPClient.create_task` use JMAP wire property names, not snake_case: ``description``, ``start``, ``due``, ``timeZone``, ``estimatedDuration``, ``percentComplete``, ``progress``, ``priority``.
 
 Fetch a task
 ============

@@ -20,8 +20,6 @@ Part of the [Python Calendaring Ecosystem](https://pycal.org).
 pip install calendaring-jmap
 ```
 
-Not yet published to PyPI.
-
 ## Usage
 
 ```python
