@@ -3,7 +3,7 @@
 
 """JMAP error hierarchy.
 
-RFC 8620 §3.6.2 defines the standard method-level error types.
+:rfc:`8620#section-3.6.2` defines the standard method-level error types.
 
 If ``caldav`` happens to be installed alongside this package, JMAPError and
 JMAPAuthError subclass its DAVError/AuthorizationError too, so code that
@@ -15,13 +15,23 @@ compatibility hook when it's present.
 from __future__ import annotations
 
 #: Fallback ``error_type`` used when a server's error response omits its
-#: own ``"type"`` field. Not itself a real RFC 8620 §3.6.2 error type, just
+#: own ``"type"`` field. Not itself a real :rfc:`8620#section-3.6.2` error type, just
 #: this package's own default for a nonconformant response.
 _DEFAULT_ERROR_TYPE = "serverFail"
 
 try:
-    from caldav.lib.error import AuthorizationError as _CaldavAuthorizationError
-    from caldav.lib.error import DAVError as _CaldavDAVError
+    # Both branches define _CaldavDAVError/_CaldavAuthorizationError; only
+    # one ever runs, but static checkers see it as one name defined twice
+    # and flag the second definition as incompatible with the first. mypy
+    # calls this `no-redef`; pyright/Pylance calls it `reportAssignmentType`.
+    # Both comments are needed since the two tools use different codes for
+    # the same complaint about the same lines.
+    from caldav.lib.error import (
+        AuthorizationError as _CaldavAuthorizationError,  # type: ignore[assignment]  # pyright: ignore[reportAssignmentType]
+    )
+    from caldav.lib.error import (
+        DAVError as _CaldavDAVError,  # type: ignore[assignment]  # pyright: ignore[reportAssignmentType]
+    )
 except ImportError:
 
     class _CaldavDAVError(Exception):  # type: ignore[no-redef]
@@ -50,7 +60,7 @@ class JMAPBaseError(_CaldavDAVError):
 class JMAPError(JMAPBaseError):
     """Base class for all JMAP protocol errors.
 
-    Adds ``error_type`` to carry the RFC 8620 error type string
+    Adds ``error_type`` to carry the :rfc:`8620` error type string
     (e.g. ``"unknownMethod"``, ``"invalidArguments"``).
     """
 
@@ -98,7 +108,8 @@ class JMAPAuthError(_CaldavAuthorizationError, JMAPError):
 class JMAPMethodError(JMAPError):
     """A JMAP method call returned an error response.
 
-    RFC 8620 §3.6.2 generic error types that may be set as ``error_type``:
+    :rfc:`8620#section-3.6.2` generic error types that may be set as
+    ``error_type``:
 
     - ``serverUnavailable``: temporary, retrying later may succeed
     - ``serverFail``: unexpected server-side error (default here, used

@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
-Shared datetime and duration utilities for JSCalendar ↔ iCalendar conversion.
+Shared datetime and duration utilities for JSCalendar to iCalendar conversion
+(and back).
 """
 
 from __future__ import annotations
@@ -10,15 +11,17 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from datetime import tzinfo as tzinfo_t
 
+from calendaring_jmap.constants import LOCAL_DATETIME_FORMAT
+
 
 def _timedelta_to_duration(td: timedelta) -> str:
     """Convert a timedelta to an ISO 8601 duration string.
 
     Examples:
-        timedelta(hours=1, minutes=30) → "PT1H30M"
-        timedelta(days=1, hours=2)     → "P1DT2H"
-        timedelta(0)                   → "P0D"
-        timedelta(seconds=-900)        → "-PT15M"
+        timedelta(hours=1, minutes=30) -> "PT1H30M"
+        timedelta(days=1, hours=2)     -> "P1DT2H"
+        timedelta(0)                   -> "P0D"
+        timedelta(seconds=-900)        -> "-PT15M"
 
     Args:
         td: The duration to convert.
@@ -57,10 +60,10 @@ def _duration_to_timedelta(duration_str: str) -> timedelta:
     Does not handle months or years (JSCalendar uses recurrenceRules for those).
 
     Examples:
-        "PT1H30M"  → timedelta(hours=1, minutes=30)
-        "P1DT2H"   → timedelta(days=1, hours=2)
-        "P0D"      → timedelta(0)
-        "-PT15M"   → timedelta(seconds=-900)
+        "PT1H30M"  -> timedelta(hours=1, minutes=30)
+        "P1DT2H"   -> timedelta(days=1, hours=2)
+        "P0D"      -> timedelta(0)
+        "-PT15M"   -> timedelta(seconds=-900)
 
     Args:
         duration_str: ISO 8601 duration string.
@@ -117,12 +120,12 @@ def _duration_to_timedelta(duration_str: str) -> timedelta:
 def _format_local_dt(dt: datetime | date, tzinfo: tzinfo_t | None = None) -> str:
     """Format a datetime or date as a JSCalendar LocalDateTime string.
 
-    RFC 8984 requires LocalDateTime (no Z suffix) for override keys and RRULE
-    ``until`` values, and those are expressed in the *event's* timezone.  An
-    aware datetime is therefore converted into ``tzinfo`` before the offset is
-    dropped; merely stripping it would shift the value by the UTC offset, and
-    a floating ``UNTIL`` against a TZID ``DTSTART`` is forbidden outright by
-    RFC 5545 3.3.10.
+    :rfc:`8984#section-1.4.5` requires LocalDateTime (no Z suffix) for
+    override keys and RRULE ``until`` values, and those are expressed in
+    the *event's* timezone.  An aware datetime is therefore converted into ``tzinfo``
+    before the offset is dropped; merely stripping it would shift the value
+    by the UTC offset, and a floating ``UNTIL`` against a TZID ``DTSTART``
+    is forbidden outright by :rfc:`5545#section-3.3.10`.
 
     ``tzinfo`` is the event's timezone, normally ``DTSTART.dt.tzinfo``.  When
     it is None the event is floating or all-day: there is nothing to convert
@@ -140,5 +143,5 @@ def _format_local_dt(dt: datetime | date, tzinfo: tzinfo_t | None = None) -> str
     if isinstance(dt, datetime):
         if tzinfo is not None and dt.tzinfo is not None:
             dt = dt.astimezone(tzinfo)
-        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        return dt.strftime(LOCAL_DATETIME_FORMAT)
     return f"{dt.isoformat()}T00:00:00"

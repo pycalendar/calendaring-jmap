@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""JMAP session establishment (RFC 8620 §2).
+"""JMAP session establishment (:rfc:`8620#section-2`).
 
 Fetches the Session object from /.well-known/jmap and extracts the
 information needed to make subsequent API calls.
@@ -19,7 +19,7 @@ from calendaring_jmap.error import JMAPAuthError, JMAPCapabilityError
 
 @dataclass
 class Session:
-    """Parsed JMAP Session object (RFC 8620 §2).
+    """Parsed JMAP Session object (:rfc:`8620#section-2`).
 
     Attributes:
         api_url: URL to POST method calls to.

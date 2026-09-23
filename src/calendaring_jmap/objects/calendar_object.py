@@ -29,7 +29,7 @@ class JMAPCalendarObject:
     """Thin wrapper around a raw JSCalendar CalendarEvent dict.
 
     Stores the server's JSON response as-is.  No JMAP field names are mapped
-    to typed attributes — callers work with the dict directly via
+    to typed attributes: callers work with the dict directly via
     :meth:`get_data`, or convert to iCalendar via :meth:`get_icalendar_instance`.
 
     Attributes:

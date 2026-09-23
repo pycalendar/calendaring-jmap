@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
-iCalendar → JSCalendar conversion (RFC 5545 → RFC 8984).
+iCalendar to JSCalendar conversion (:rfc:`5545` to :rfc:`8984`).
 
 Public API:
     ical_to_jscal(ical_str, calendar_id=None) -> dict
@@ -21,11 +21,13 @@ import icalendar
 from icalendar.timezone.tzid import tzid_from_dt
 
 from calendaring_jmap.constants import (
+    LOCAL_DATETIME_FORMAT,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
     PARTICIPATION_STATUS_DELEGATED,
     PARTICIPATION_STATUS_NEEDS_ACTION,
     PARTICIPATION_STATUS_TENTATIVE,
+    UTC_DATETIME_FORMAT,
 )
 from calendaring_jmap.convert._fixup import fixup
 from calendaring_jmap.convert._utils import _format_local_dt, _timedelta_to_duration
@@ -96,29 +98,29 @@ def _dtstart_to_jscal(dtstart_prop) -> tuple[str, str | None, bool]:
     dt = dtstart_prop.dt
 
     if isinstance(dt, date) and not isinstance(dt, datetime):
-        # VALUE=DATE — all-day event
+        # VALUE=DATE: all-day event
         return f"{dt.isoformat()}T00:00:00", None, True
 
     if dt.tzinfo is not None and dt.utcoffset() == timedelta(0):
-        # UTC — JSCalendar start is LocalDateTime; express via timeZone="Etc/UTC"
-        return dt.strftime("%Y-%m-%dT%H:%M:%S"), "Etc/UTC", False
+        # UTC: JSCalendar start is LocalDateTime; express via timeZone="Etc/UTC"
+        return dt.strftime(LOCAL_DATETIME_FORMAT), "Etc/UTC", False
 
     if dt.tzinfo is not None:
         # Timezone-aware. RFC 8984 requires an IANA name; a raw TZID param
         # can be a Windows or vendor-prefixed name instead, so resolve via
         # tzid_from_dt() rather than using the param string directly.
         tz_str = tzid_from_dt(dt)
-        return dt.strftime("%Y-%m-%dT%H:%M:%S"), tz_str, False
+        return dt.strftime(LOCAL_DATETIME_FORMAT), tz_str, False
 
     # Floating (no timezone)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S"), None, False
+    return dt.strftime(LOCAL_DATETIME_FORMAT), None, False
 
 
 def _rrule_to_jscal(rrule_prop, tzinfo=None) -> dict:
     """Convert an iCalendar RRULE property to a JSCalendar RecurrenceRule dict.
 
     Always emits @type, interval, rscale, skip, firstDayOfWeek to match the
-    fields Cyrus returns — makes round-trip comparison predictable.
+    fields Cyrus returns, which makes round-trip comparison predictable.
 
     ``tzinfo`` is the event's timezone; ``until`` is a LocalDateTime in that
     zone, so a UTC ``UNTIL`` off the wire has to be converted, not truncated.
@@ -219,10 +221,10 @@ def _first_recurrence_rule(master: dict, ical_key: str, tzinfo=None) -> dict | N
 def _exdate_to_overrides(exdate_prop, tzinfo=None) -> dict:
     """Convert an EXDATE property (single or list) to recurrenceOverrides entries.
 
-    ``tzinfo`` is the event's timezone — see :func:`_format_local_dt`.
+    ``tzinfo`` is the event's timezone; see :func:`_format_local_dt`.
 
     Returns:
-        Dict mapping LocalDateTime/UTCDateTime string → {"excluded": True}
+        Dict mapping LocalDateTime/UTCDateTime string to {"excluded": True}
     """
     # EXDATE may be a single vDDDLists or a list of them
     if not isinstance(exdate_prop, list):
@@ -240,13 +242,13 @@ def _exdate_to_overrides(exdate_prop, tzinfo=None) -> dict:
 def _cal_address_to_imip_and_email(addr: str) -> tuple[str, str | None]:
     """Split a CAL-ADDRESS value into its ``calendarAddress`` URI and, if it is one, its bare email.
 
-    ORGANIZER/ATTENDEE values are URIs (RFC 5545 §3.3.3) and are not
-    required to use the ``mailto:`` scheme (e.g. ``sip:alice@example.com``).
-    RFC 8984's Participant ``email`` property is specifically an
-    RFC 5322 addr-spec, not an arbitrary URI, so a non-mailto address is
-    kept as-is for ``calendarAddress`` (not double-wrapped in a spurious
-    ``mailto:``) and ``email`` is left unset rather than populated with a
-    value that isn't actually an email address.
+    ORGANIZER/ATTENDEE values are URIs (:rfc:`5545#section-3.3.3`) and are
+    not required to use the ``mailto:`` scheme (e.g. ``sip:alice@example.com``).
+    :rfc:`8984#section-4.4.6`'s Participant ``email`` property is specifically
+    an :rfc:`5322#section-3.4.1` addr-spec, not an arbitrary URI, so a
+    non-mailto address is kept as-is for ``calendarAddress`` (not
+    double-wrapped in a spurious ``mailto:``) and ``email`` is left unset
+    rather than populated with a value that isn't actually an email address.
     """
     if addr.startswith("mailto:"):
         return addr, addr.removeprefix("mailto:")
@@ -320,27 +322,37 @@ def _attendee_to_participant(attendee) -> tuple[str, dict]:
     return pid, p
 
 
-def _valarm_to_alert(alarm) -> tuple[str, dict]:
+def _valarm_to_alert(alarm) -> tuple[str, dict] | None:
     """Convert a VALARM component to a (alert_id, Alert dict) tuple.
 
     Trigger is emitted as a plain SignedDuration string (e.g. "-PT15M") or
-    UTCDateTime string per the JSCalendar Alert spec (RFC 8984 §4.5.2).
+    UTCDateTime string per the JSCalendar Alert spec (:rfc:`8984#section-4.5.2`).
+
+    Returns ``None`` if the VALARM has no ``TRIGGER``: mandatory per
+    :rfc:`5545#section-3.6.6` and :rfc:`8984#section-4.5.2` alike, but not
+    every producer enforces it. Skipping just this one alarm (with a
+    warning) rather than raising means one malformed VALARM doesn't fail
+    conversion of the whole event, matching :func:`_first_recurrence_rule`'s
+    same "degrade gracefully on a non-fatal sub-item issue" precedent.
     """
+    trigger_prop = alarm.get("TRIGGER")
+    if trigger_prop is None:
+        log.warning("ical_to_jscal(): VALARM has no TRIGGER, skipping this alert")
+        return None
+
     alert_id = str(uuid.uuid4())
     action = str(alarm.get("ACTION", "display")).lower()
     alert: dict = {"action": action}
 
-    trigger_prop = alarm.get("TRIGGER")
-    if trigger_prop is not None:
-        trigger_val = trigger_prop.dt
-        if isinstance(trigger_val, timedelta):
-            # Relative trigger — convert to SignedDuration string
-            alert["trigger"] = _timedelta_to_duration(trigger_val)
-            if str(trigger_prop.params.get("RELATED", "START")).upper() == "END":
-                alert["relativeTo"] = "end"
-        elif isinstance(trigger_val, datetime):
-            # Absolute trigger — UTCDateTime string
-            alert["trigger"] = trigger_val.strftime("%Y-%m-%dT%H:%M:%SZ")
+    trigger_val = trigger_prop.dt
+    if isinstance(trigger_val, timedelta):
+        # Relative trigger: convert to SignedDuration string
+        alert["trigger"] = _timedelta_to_duration(trigger_val)
+        if str(trigger_prop.params.get("RELATED", "START")).upper() == "END":
+            alert["relativeTo"] = "end"
+    elif isinstance(trigger_val, datetime):
+        # Absolute trigger: UTCDateTime string
+        alert["trigger"] = trigger_val.strftime(UTC_DATETIME_FORMAT)
 
     description = alarm.get("DESCRIPTION")
     if description:
@@ -383,14 +395,14 @@ def _categories_to_keywords(categories_prop) -> dict:
 
 
 def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
-    """Convert an iCalendar string to a JSCalendar CalendarEvent dict (RFC 8984).
+    """Convert an iCalendar string to a JSCalendar CalendarEvent dict (:rfc:`8984`).
 
     Processes the first VEVENT found in the string. Any sibling VEVENTs with a
     RECURRENCE-ID are folded into the ``recurrenceOverrides`` map of the master
     event. EXDATE entries are also added to ``recurrenceOverrides``.
 
     Args:
-        ical_str: A VCALENDAR string (or bare VEVENT — fixup() normalises it).
+        ical_str: A VCALENDAR string (or bare VEVENT; fixup() normalises it).
         calendar_id: If provided, sets ``calendarIds: {calendar_id: true}``
             on the output. Required when the result will be used in
             ``CalendarEvent/set`` (the server needs to know which calendar).
@@ -399,7 +411,15 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
         Raw JSCalendar dict suitable for passing directly to ``CalendarEvent/set``.
 
     Raises:
-        ValueError: If no VEVENT component is found.
+        ValueError: If no VEVENT component is found; the master VEVENT is
+            missing ``UID`` or ``DTSTART`` (both mandatory per :rfc:`5545`,
+            but not every producer enforces this); ``DTSTART``/``DTEND``
+            have mismatched value types, one ``DATE`` and one
+            ``DATE-TIME`` (:rfc:`5545#section-3.8.2.2` requires both to
+            match, and ``DTEND`` to be later in time than ``DTSTART``); or
+            ``DTEND``/``DURATION`` resolves to before ``DTSTART``
+            (:rfc:`8984#section-5.1.2` requires ``duration`` to be zero or
+            positive).
     """
     # Normalize iCal string (fixes common server-generated violations)
     fixed = fixup(ical_str)
@@ -420,6 +440,10 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
 
     if master is None:
         raise ValueError("No VEVENT component found in iCalendar string")
+    if "UID" not in master:
+        raise ValueError("Master VEVENT is missing the mandatory UID property")
+    if "DTSTART" not in master:
+        raise ValueError("Master VEVENT is missing the mandatory DTSTART property")
 
     uid = str(master["UID"])
     summary = master.get("SUMMARY")
@@ -429,7 +453,7 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
 
     ## The event's own timezone.  Every LocalDateTime slot below (RRULE
     ## until, EXDATE keys, RECURRENCE-ID keys) is expressed in it, so it has
-    ## to be known before any of them can be formatted — which is why the
+    ## to be known before any of them can be formatted, which is why the
     ## override keys cannot be built in the loop above.
     event_tzinfo = getattr(getattr(dtstart_prop, "dt", None), "tzinfo", None)
 
@@ -442,13 +466,37 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
 
     dtend_prop = master.get("DTEND")
     if master.get("DURATION"):
-        duration = _timedelta_to_duration(_prop_timedelta(master["DURATION"]))
+        event_duration = _prop_timedelta(master["DURATION"])
     elif dtend_prop is not None:
-        duration = _timedelta_to_duration(
-            _prop_date_or_datetime(dtend_prop) - _prop_date_or_datetime(dtstart_prop)
-        )
+        dtend_val = _prop_date_or_datetime(dtend_prop)
+        dtstart_val = _prop_date_or_datetime(dtstart_prop)
+        # RFC 5545 requires DTSTART/DTEND to share the same VALUE type
+        # (both DATE or both DATE-TIME) within one component; a mismatch
+        # here (one all-day, one timed) isn't just malformed data like a
+        # backwards DTEND, it's a type Python's stdlib can't subtract at
+        # all, so this needs its own check rather than falling into the
+        # generic negative-duration one below.
+        if isinstance(dtend_val, datetime) != isinstance(dtstart_val, datetime):
+            raise ValueError(
+                f"Event {uid!r} has mismatched DTSTART/DTEND value types "
+                f"({type(dtstart_val).__name__} vs {type(dtend_val).__name__}): "
+                "RFC 5545 requires both to be DATE or both DATE-TIME"
+            )
+        event_duration = dtend_val - dtstart_val  # type: ignore[operator]
     else:
-        duration = "P0D"
+        event_duration = timedelta()
+
+    # RFC 8984 section 5.1.2: Event duration is "zero or positive"; a
+    # DTEND before DTSTART (malformed, but not unheard of from a
+    # nonconformant producer) would otherwise silently become a negative
+    # JSCalendar duration and fail server-side with an opaque
+    # invalidProperties error instead of failing fast here with a clear one.
+    if event_duration < timedelta():
+        raise ValueError(
+            f"Event {uid!r} has a negative duration ({event_duration}): "
+            "DTEND/DURATION resolves to before DTSTART"
+        )
+    duration = _timedelta_to_duration(event_duration)
 
     jscal: dict = {
         "@type": "Event",
@@ -597,8 +645,11 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
     if alarms:
         alerts: dict = {}
         for alarm in alarms:
-            alert_id, alert = _valarm_to_alert(alarm)
-            alerts[alert_id] = alert
-        jscal["alerts"] = alerts
+            converted = _valarm_to_alert(alarm)
+            if converted is not None:
+                alert_id, alert = converted
+                alerts[alert_id] = alert
+        if alerts:
+            jscal["alerts"] = alerts
 
     return jscal

@@ -12,7 +12,7 @@ Stalwart (port 8809):
     ./tests/docker/stalwart/setup_stalwart.sh
 
 Each server's test classes are skipped automatically when that server is not
-reachable — no failure, no noise.
+reachable, so a missing server is quiet, not a failure.
 """
 
 import socket
@@ -27,7 +27,7 @@ try:
 except ImportError:
     from requests.auth import HTTPBasicAuth  # type: ignore[assignment,no-redef]
 
-from calendaring_jmap import AsyncJMAPClient, JMAPClient
+from calendaring_jmap import AsyncJMAPClient, JMAPCalendarObject, JMAPClient
 from calendaring_jmap.constants import CALENDAR_CAPABILITY
 from calendaring_jmap.convert import jscal_to_ical
 from calendaring_jmap.error import JMAPMethodError
@@ -72,38 +72,26 @@ _stalwart_up = _reachable(STALWART_HOST, STALWART_PORT)
 # Stalwart itself is reachable.
 _cyrus_skip = pytest.mark.skipif(
     not _cyrus_up,
-    reason=f"Cyrus Docker not reachable on {CYRUS_HOST}:{CYRUS_PORT} — "
-    "start it with: docker-compose -f tests/docker/cyrus/docker-compose.yml up -d",
+    reason=f"Cyrus Docker not reachable on {CYRUS_HOST}:{CYRUS_PORT}. "
+    "Start it with: docker-compose -f tests/docker/cyrus/docker-compose.yml up -d",
 )
 
 
-def _minimal_ical(title: str = "Test Event", start: datetime | None = None) -> str:
-    if start is None:
-        start = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
-    end = start + timedelta(hours=1)
-    uid = str(uuid.uuid4())
-    return (
-        "BEGIN:VCALENDAR\r\n"
-        "VERSION:2.0\r\n"
-        "PRODID:-//test//test//EN\r\n"
-        "BEGIN:VEVENT\r\n"
-        f"UID:{uid}\r\n"
-        f"SUMMARY:{title}\r\n"
-        f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
-        f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
-        "END:VEVENT\r\n"
-        "END:VCALENDAR\r\n"
-    )
+_DEFAULT_ICAL_START = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
 
 
-def _recurring_ical(
-    rrule: str,
-    title: str = "Recurring Test Event",
-    start: datetime | None = None,
-    duration: timedelta = timedelta(hours=1),
+def _vevent_ical(
+    title: str,
+    start: datetime,
+    duration: timedelta,
+    extra_lines: str = "",
 ) -> str:
-    if start is None:
-        start = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    """Build a minimal single-VEVENT VCALENDAR string.
+
+    Shared by :func:`_minimal_ical`, :func:`_recurring_ical`, and
+    :func:`_invite_ical`, which each add their own ``extra_lines``
+    (``RRULE``, ``ORGANIZER``/``ATTENDEE``) before ``END:VEVENT``.
+    """
     end = start + duration
     uid = str(uuid.uuid4())
     return (
@@ -115,9 +103,24 @@ def _recurring_ical(
         f"SUMMARY:{title}\r\n"
         f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
         f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
-        f"RRULE:{rrule}\r\n"
+        f"{extra_lines}"
         "END:VEVENT\r\n"
         "END:VCALENDAR\r\n"
+    )
+
+
+def _minimal_ical(title: str = "Test Event", start: datetime | None = None) -> str:
+    return _vevent_ical(title, start or _DEFAULT_ICAL_START, timedelta(hours=1))
+
+
+def _recurring_ical(
+    rrule: str,
+    title: str = "Recurring Test Event",
+    start: datetime | None = None,
+    duration: timedelta = timedelta(hours=1),
+) -> str:
+    return _vevent_ical(
+        title, start or _DEFAULT_ICAL_START, duration, extra_lines=f"RRULE:{rrule}\r\n"
     )
 
 
@@ -127,24 +130,20 @@ def _invite_ical(
     title: str = "Scheduling Test Event",
     start: datetime | None = None,
 ) -> str:
-    if start is None:
-        start = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
-    end = start + timedelta(hours=1)
-    uid = str(uuid.uuid4())
-    return (
-        "BEGIN:VCALENDAR\r\n"
-        "VERSION:2.0\r\n"
-        "PRODID:-//test//test//EN\r\n"
-        "BEGIN:VEVENT\r\n"
-        f"UID:{uid}\r\n"
-        f"SUMMARY:{title}\r\n"
-        f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
-        f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+    extra_lines = (
         f"ORGANIZER:mailto:{organizer_email}\r\n"
         f"ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{attendee_email}\r\n"
-        "END:VEVENT\r\n"
-        "END:VCALENDAR\r\n"
     )
+    return _vevent_ical(title, start or _DEFAULT_ICAL_START, timedelta(hours=1), extra_lines)
+
+
+def _attendee_participation_status(event: JMAPCalendarObject, email: str) -> str:
+    """Return ``participationStatus`` for the participant matching ``email``
+    on a fetched event. Shared by every accept/decline/tentative scheduling
+    test, which otherwise re-read the server's own copy of an invite the
+    same way three times over."""
+    attendee = next(p for p in event.get_data()["participants"].values() if p.get("email") == email)
+    return attendee["participationStatus"]
 
 
 @pytest.fixture(scope="module")
@@ -200,8 +199,8 @@ async def async_created_event_id(async_client, async_calendar_id):
 
 _stalwart_skip = pytest.mark.skipif(
     not _stalwart_up,
-    reason=f"Stalwart Docker not reachable on {STALWART_HOST}:{STALWART_PORT} — "
-    "start it with: cd tests/docker/stalwart && ./start.sh",
+    reason=f"Stalwart Docker not reachable on {STALWART_HOST}:{STALWART_PORT}. "
+    "Start it with: cd tests/docker/stalwart && ./start.sh",
 )
 
 
@@ -299,6 +298,24 @@ def second_account_client(request, server):
     )
 
 
+def _own_account_id(server: str, primary: bool) -> str:
+    """Resolve the account id a user's own session sees for itself, by
+    opening a session as that user and reading it back. Shared by
+    :func:`owner_account_id`/:func:`second_account_id`: both need this same
+    self-resolution (this client has no Principal/query support yet, so
+    there's no other way to look up someone else's account id)."""
+    if server == "cyrus":
+        url = CYRUS_JMAP_URL
+        username = CYRUS_USERNAME if primary else CYRUS_USERNAME_2
+        password = CYRUS_PASSWORD if primary else CYRUS_PASSWORD_2
+    else:
+        url = STALWART_JMAP_URL
+        username = STALWART_USERNAME if primary else STALWART_USERNAME_2
+        password = STALWART_PASSWORD if primary else STALWART_PASSWORD_2
+    session = fetch_session(url, auth=HTTPBasicAuth(username, password))
+    return session.account_id
+
+
 @pytest.fixture
 def second_account_id(server):
     """The account id a second user's own session resolves for itself.
@@ -308,15 +325,7 @@ def second_account_id(server):
     a caller without Principal support would have to: open a session as the
     target user and read what account id they see for themselves.
     """
-    if server == "cyrus":
-        session = fetch_session(
-            CYRUS_JMAP_URL, auth=HTTPBasicAuth(CYRUS_USERNAME_2, CYRUS_PASSWORD_2)
-        )
-    else:
-        session = fetch_session(
-            STALWART_JMAP_URL, auth=HTTPBasicAuth(STALWART_USERNAME_2, STALWART_PASSWORD_2)
-        )
-    return session.account_id
+    return _own_account_id(server, primary=False)
 
 
 @pytest.fixture
@@ -327,13 +336,7 @@ def owner_account_id(server):
     share_calendar() call, since JMAP surfaces a shared calendar under the
     owner's accountId, not the sharee's own primary account.
     """
-    if server == "cyrus":
-        session = fetch_session(CYRUS_JMAP_URL, auth=HTTPBasicAuth(CYRUS_USERNAME, CYRUS_PASSWORD))
-    else:
-        session = fetch_session(
-            STALWART_JMAP_URL, auth=HTTPBasicAuth(STALWART_USERNAME, STALWART_PASSWORD)
-        )
-    return session.account_id
+    return _own_account_id(server, primary=True)
 
 
 @pytest.fixture
@@ -419,8 +422,8 @@ class TestJMAPCalendarManagementIntegration:
     ):
         """A shared calendar lives under the owner's accountId, not the
         sharee's own primary account (JMAP's multi-account model, RFC 8620
-        §2). The sharee's session gains access to the owner's account, so
-        they browse it with get_calendars(account_id=owner_account_id)
+        section 2). The sharee's session gains access to the owner's account,
+        so they browse it with get_calendars(account_id=owner_account_id)
         rather than their own default get_calendars()."""
         cal_id = calendar_management_client.create_calendar("Shared Integration Calendar")
         try:
@@ -553,12 +556,8 @@ class TestJMAPSchedulingIntegration:
             )
 
             updated = calendar_management_client.get_event(event_id)
-            attendee = next(
-                p
-                for p in updated.get_data()["participants"].values()
-                if p.get("email") == second_account_email
-            )
-            assert attendee["participationStatus"] == "accepted", (
+            status = _attendee_participation_status(updated, second_account_email)
+            assert status == "accepted", (
                 f"{server}: accept_invitation did not update participationStatus "
                 f"on the organizer's own copy of the event."
             )
@@ -586,12 +585,7 @@ class TestJMAPSchedulingIntegration:
             )
 
             updated = calendar_management_client.get_event(event_id)
-            attendee = next(
-                p
-                for p in updated.get_data()["participants"].values()
-                if p.get("email") == second_account_email
-            )
-            assert attendee["participationStatus"] == "declined"
+            assert _attendee_participation_status(updated, second_account_email) == "declined"
         finally:
             calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
 
@@ -616,12 +610,7 @@ class TestJMAPSchedulingIntegration:
             )
 
             updated = calendar_management_client.get_event(event_id)
-            attendee = next(
-                p
-                for p in updated.get_data()["participants"].values()
-                if p.get("email") == second_account_email
-            )
-            assert attendee["participationStatus"] == "tentative"
+            assert _attendee_participation_status(updated, second_account_email) == "tentative"
         finally:
             calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
 
@@ -648,9 +637,10 @@ class TestJMAPSchedulingIntegration:
         server,
     ):
         """delete_event with send_scheduling_messages requests a CANCEL per
-        JMAP Calendars §5.9.2.2; the client has no way to inspect iMIP
-        delivery directly, so the observable assertion is that the event is
-        actually gone from the organizer's own account after cancellation."""
+        JMAP Calendars section 5.9.2.2; the client has no way to inspect
+        iMIP delivery directly, so the observable assertion is that the
+        event is actually gone from the organizer's own account after
+        cancellation."""
         cal_id = calendar_management_client.create_calendar("Cancellation Integration Calendar")
         try:
             calendar_management_client.share_calendar(cal_id, second_account_id, _SCHEDULING_RIGHTS)
@@ -710,7 +700,7 @@ class TestJMAPSchedulingIntegration:
             calendar_management_client.delete_calendar(cal_id, on_destroy_remove_events=True)
 
     def test_sequence_increments_on_substantive_update(self, calendar_management_client, server):
-        """JMAP Calendars §5.9: the server MUST increment sequence when a
+        """JMAP Calendars section 5.9: the server MUST increment sequence when a
         non-per-user property changes and the account is the event's
         origin. The client never sets sequence itself; this proves the
         server does, rather than assuming it from the spec text alone.

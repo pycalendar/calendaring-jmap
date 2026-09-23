@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
-JSCalendar → iCalendar conversion (RFC 8984 → RFC 5545).
+JSCalendar to iCalendar conversion (:rfc:`8984` to :rfc:`5545`).
 
 Public API:
     jscal_to_ical(jscal: dict) -> str
@@ -20,11 +20,13 @@ import icalendar
 from icalendar import vCalAddress, vText
 
 from calendaring_jmap.constants import (
+    LOCAL_DATETIME_FORMAT,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
     PARTICIPATION_STATUS_DELEGATED,
     PARTICIPATION_STATUS_NEEDS_ACTION,
     PARTICIPATION_STATUS_TENTATIVE,
+    UTC_DATETIME_FORMAT,
 )
 from calendaring_jmap.convert._fixup import fixup
 from calendaring_jmap.convert._utils import _duration_to_timedelta
@@ -81,11 +83,11 @@ def _start_to_dtstart(
         return
 
     if start_str.endswith("Z"):
-        dt = datetime.strptime(start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(start_str, UTC_DATETIME_FORMAT).replace(tzinfo=timezone.utc)
         component.add("dtstart", dt)
         return
 
-    dt_naive = datetime.strptime(start_str[:19], "%Y-%m-%dT%H:%M:%S")
+    dt_naive = datetime.strptime(start_str[:19], LOCAL_DATETIME_FORMAT)
 
     if time_zone:
         try:
@@ -93,7 +95,7 @@ def _start_to_dtstart(
             dt = dt_naive.replace(tzinfo=tz)
             component.add("dtstart", dt)
         except ZoneInfoNotFoundError:
-            # Non-IANA TZID (e.g. "Eastern Standard Time") — pass through as-is
+            # Non-IANA TZID (e.g. "Eastern Standard Time"): pass through as-is
             # so the consuming calendar client can resolve it.
             dtstart = icalendar.vDatetime(dt_naive)
             dtstart.params["TZID"] = time_zone
@@ -105,9 +107,9 @@ def _start_to_dtstart(
 def _recurrence_rules(jscal: dict, singular_key: str, plural_key: str) -> list[dict]:
     """Return the RecurrenceRule dicts for ``singular_key``/``plural_key`` on an Event.
 
-    RFC 8984 defines the plural key as an array; both test servers this repo
-    targets send the singular key instead (see the matching comment in
-    ical_to_jscal.py). Prefer the plural array when present, since it is the
+    :rfc:`8984#section-4.3.3` defines the plural key as an array; both test
+    servers this repo targets send the singular key instead (see the matching
+    comment in ical_to_jscal.py). Prefer the plural array when present, since it is the
     actual spec type and can hold more than one rule; fall back to the
     singular key for these servers' shape.
     """
@@ -121,13 +123,13 @@ def _recurrence_rules(jscal: dict, singular_key: str, plural_key: str) -> list[d
 def _jscal_rrule_to_rrule(rule: dict, time_zone: str | None = None) -> dict:
     """Convert a JSCalendar RecurrenceRule dict to an iCalendar vRecur-compatible dict.
 
-    Strips @type and NDay @type fields — icalendar library rejects them.
+    Strips @type and NDay @type fields, which the icalendar library rejects.
     Returns a plain dict suitable for icalendar.vRecur.
 
     ``time_zone`` is the event's IANA time zone.  The JSCalendar ``until`` is a
-    LocalDateTime in that zone; RFC 5545 §3.3.10 requires the iCalendar UNTIL to
-    be UTC whenever DTSTART is a TZID or UTC date-time, so a non-Z ``until`` is
-    converted back to UTC here.
+    LocalDateTime in that zone; :rfc:`5545#section-3.3.10` requires the
+    iCalendar UNTIL to be UTC whenever DTSTART is a TZID or UTC date-time, so
+    a non-Z ``until`` is converted back to UTC here.
     """
     freq = rule.get("frequency", "").upper()
     if not freq:
@@ -146,14 +148,14 @@ def _jscal_rrule_to_rrule(rule: dict, time_zone: str | None = None) -> dict:
     until = rule.get("until")
     if until:
         if until.endswith("Z"):
-            ical_rule["UNTIL"] = datetime.strptime(until, "%Y-%m-%dT%H:%M:%SZ").replace(
+            ical_rule["UNTIL"] = datetime.strptime(until, UTC_DATETIME_FORMAT).replace(
                 tzinfo=timezone.utc
             )
         elif time_zone:
-            # RFC 5545 §3.3.10: a TZID/UTC DTSTART requires a UTC UNTIL.  The
+            # RFC 5545 section 3.3.10: a TZID/UTC DTSTART requires a UTC UNTIL.  The
             # JSCalendar until is LocalDateTime in the event timeZone; convert
             # it back to UTC so the emitted UNTIL carries the Z suffix.
-            naive = datetime.strptime(until[:19], "%Y-%m-%dT%H:%M:%S")
+            naive = datetime.strptime(until[:19], LOCAL_DATETIME_FORMAT)
             try:
                 ical_rule["UNTIL"] = naive.replace(tzinfo=ZoneInfo(time_zone)).astimezone(
                     timezone.utc
@@ -161,7 +163,7 @@ def _jscal_rrule_to_rrule(rule: dict, time_zone: str | None = None) -> dict:
             except ZoneInfoNotFoundError:
                 ical_rule["UNTIL"] = naive
         else:
-            ical_rule["UNTIL"] = datetime.strptime(until[:19], "%Y-%m-%dT%H:%M:%S")
+            ical_rule["UNTIL"] = datetime.strptime(until[:19], LOCAL_DATETIME_FORMAT)
 
     by_day = rule.get("byDay", [])
     if by_day:
@@ -289,7 +291,7 @@ def _alert_to_valarm(alert: dict) -> icalendar.Alarm:
     if trigger_str:
         if trigger_str.endswith("Z"):
             try:
-                dt = datetime.strptime(trigger_str, "%Y-%m-%dT%H:%M:%SZ").replace(
+                dt = datetime.strptime(trigger_str, UTC_DATETIME_FORMAT).replace(
                     tzinfo=timezone.utc
                 )
                 alarm.add("trigger", dt)
@@ -342,6 +344,12 @@ def jscal_to_ical(jscal: dict) -> str:
 
     Returns:
         An iCalendar VCALENDAR string, normalised by :func:`~calendaring_jmap.convert._fixup.fixup`.
+
+    Raises:
+        ValueError: If ``uid`` is absent or empty (mandatory per
+            :rfc:`8984#section-4.1.2`; a server response should always
+            include it, but emitting an ``UID``-less VEVENT, invalid per
+            :rfc:`5545`, would be a worse failure mode than raising here).
     """
     cal = icalendar.Calendar()
     cal.add("prodid", "-//calendaring-jmap//JMAP//EN")
@@ -350,8 +358,9 @@ def jscal_to_ical(jscal: dict) -> str:
     event = icalendar.Event()
 
     uid = jscal.get("uid", "")
-    if uid:
-        event.add("uid", uid)
+    if not uid:
+        raise ValueError("JSCalendar event is missing the mandatory 'uid' property")
+    event.add("uid", uid)
     event.add("dtstamp", datetime.now(tz=timezone.utc))
 
     sequence = jscal.get("sequence", 0)
@@ -429,20 +438,20 @@ def jscal_to_ical(jscal: dict) -> str:
 
     for override_key, patch in (jscal.get("recurrenceOverrides") or {}).items():
         if override_key.endswith("Z"):
-            rid_dt: datetime | date = datetime.strptime(override_key, "%Y-%m-%dT%H:%M:%SZ").replace(
+            rid_dt: datetime | date = datetime.strptime(override_key, UTC_DATETIME_FORMAT).replace(
                 tzinfo=timezone.utc
             )
         elif show_without_time:
             rid_dt = date.fromisoformat(override_key[:10])
         elif time_zone:
             try:
-                rid_dt = datetime.strptime(override_key[:19], "%Y-%m-%dT%H:%M:%S").replace(
+                rid_dt = datetime.strptime(override_key[:19], LOCAL_DATETIME_FORMAT).replace(
                     tzinfo=ZoneInfo(time_zone)
                 )
             except ZoneInfoNotFoundError:
-                rid_dt = datetime.strptime(override_key[:19], "%Y-%m-%dT%H:%M:%S")
+                rid_dt = datetime.strptime(override_key[:19], LOCAL_DATETIME_FORMAT)
         else:
-            rid_dt = datetime.strptime(override_key[:19], "%Y-%m-%dT%H:%M:%S")
+            rid_dt = datetime.strptime(override_key[:19], LOCAL_DATETIME_FORMAT)
 
         if patch is None or (isinstance(patch, dict) and patch.get("excluded")):
             exdates.append(rid_dt)

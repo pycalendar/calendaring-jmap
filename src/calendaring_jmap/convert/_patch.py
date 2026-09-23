@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
-RFC 8620 PatchObject helpers for CalendarEvent/set update calls.
+:rfc:`8620#section-5.3` PatchObject helpers for CalendarEvent/set update calls.
 
 When updating an event, absent keys preserve the server's current value.
 To delete an optional property the patch must set it to null explicitly.

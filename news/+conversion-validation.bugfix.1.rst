@@ -1,0 +1,1 @@
+``ical_to_jscal`` now raises ``ValueError`` when a VEVENT's ``DTEND``/``DURATION`` resolves to before its ``DTSTART``, instead of silently producing a negative JSCalendar ``duration``, which RFC 8984 forbids and a server would otherwise reject with an opaque ``invalidProperties`` error.

@@ -4,14 +4,15 @@
 """
 JMAP Principal method builders and response parsers.
 
-These are pure functions — no HTTP, no state. They build the request
+These are pure functions: no HTTP, no state. They build the request
 tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
-``Principal/getAvailability`` is defined in draft-ietf-jmap-calendars §2.2,
-layered on the ``Principal`` object from RFC 9670 (JMAP Sharing). It is not
-a get/set/query method; it takes its own bespoke arguments and returns a
-list of ``BusyPeriod`` objects, also defined in that same section.
+``Principal/getAvailability`` is defined in draft-ietf-jmap-calendars
+section 2.2, layered on the ``Principal`` object from :rfc:`9670` (JMAP
+Sharing). It is not a get/set/query method; it takes its own bespoke
+arguments and returns a list of ``BusyPeriod`` objects, also defined in
+that same section.
 """
 
 from __future__ import annotations

@@ -4,17 +4,18 @@
 """
 JMAP Task and TaskList method builders and response parsers.
 
-These are pure functions — no HTTP, no state. They build the request
+These are pure functions: no HTTP, no state. They build the request
 tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
-Method shapes follow RFC 8620 §3.3 (get), §3.5 (set); Task-specific
-properties are defined in draft-ietf-jmap-tasks (built on RFC 8984).
+Method shapes follow :rfc:`8620#section-3.3` (get), :rfc:`8620#section-3.5`
+(set); Task-specific properties are defined in draft-ietf-jmap-tasks (built
+on :rfc:`8984`).
 """
 
 from __future__ import annotations
 
-from calendaring_jmap._methods import parse_set_response
+from calendaring_jmap._methods import build_get, parse_set_response
 
 
 def build_task_list_get(
@@ -33,10 +34,7 @@ def build_task_list_get(
         A 3-tuple ``("TaskList/get", arguments_dict, call_id)`` suitable
         for inclusion in a ``methodCalls`` list.
     """
-    args: dict = {"accountId": account_id, "ids": ids}
-    if properties is not None:
-        args["properties"] = properties
-    return ("TaskList/get", args, "tasklist-get-0")
+    return build_get("TaskList/get", "tasklist-get-0", account_id, ids, properties)
 
 
 def parse_task_list_get(response_args: dict) -> list[dict]:
@@ -68,24 +66,7 @@ def build_task_get(
     Returns:
         A 3-tuple ``("Task/get", arguments_dict, call_id)``.
     """
-    args: dict = {"accountId": account_id, "ids": ids}
-    if properties is not None:
-        args["properties"] = properties
-    return ("Task/get", args, "task-get-0")
-
-
-def parse_task_get(response_args: dict) -> list[dict]:
-    """Parse the arguments dict from a ``Task/get`` method response.
-
-    Args:
-        response_args: The second element of a ``methodResponses`` entry
-            whose method name is ``"Task/get"``.
-
-    Returns:
-        List of raw JMAP Task dicts as returned by the server.
-        Returns an empty list if ``"list"`` is absent or empty.
-    """
-    return list(response_args.get("list", []))
+    return build_get("Task/get", "task-get-0", account_id, ids, properties)
 
 
 def build_task_set_create(
@@ -96,7 +77,7 @@ def build_task_set_create(
 
     Args:
         account_id: The JMAP accountId.
-        tasks: Map of client-assigned creation ID → JMAP Task dict.
+        tasks: Map of client-assigned creation ID to JMAP Task dict.
 
     Returns:
         A 3-tuple ``("Task/set", arguments_dict, call_id)``.
@@ -119,7 +100,7 @@ def build_task_set_update(
 
     Args:
         account_id: The JMAP accountId.
-        updates: Map of task ID → partial patch dict.
+        updates: Map of task ID to partial patch dict.
 
     Returns:
         A 3-tuple ``("Task/set", arguments_dict, call_id)``.
