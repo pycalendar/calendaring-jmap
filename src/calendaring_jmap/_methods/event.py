@@ -4,18 +4,26 @@
 """
 JMAP CalendarEvent method builders and response parsers.
 
-These are pure functions — no HTTP, no state. They build the request
+These are pure functions: no HTTP, no state. They build the request
 tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
-Method shapes follow RFC 8620 §3.3 (get), §3.4 (changes), §3.5 (set),
-§3.6 (query), §3.7 (queryChanges); CalendarEvent-specific properties are
-defined in the JMAP Calendars specification.
+Method shapes follow :rfc:`8620#section-3.3` (get), :rfc:`8620#section-3.4`
+(changes), :rfc:`8620#section-3.5` (set), :rfc:`8620#section-3.6` (query),
+:rfc:`8620#section-3.7` (queryChanges); CalendarEvent-specific properties
+are defined in the JMAP Calendars specification.
 """
 
 from __future__ import annotations
 
-from calendaring_jmap._methods import parse_set_response
+from calendaring_jmap._methods import build_get, parse_set_response
+
+## call_id of the CalendarEvent/query call built by build_event_query(), and
+## of the result-referencing CalendarEvent/get call in
+## build_event_get_by_query_result(). Named so the two stay in sync by
+## construction instead of by two separately hardcoded string literals.
+_EVENT_QUERY_CALL_ID = "ev-query-0"
+_EVENT_GET_BY_QUERY_CALL_ID = "ev-get-1"
 
 
 def build_event_get(
@@ -34,10 +42,7 @@ def build_event_get(
         A 3-tuple ``("CalendarEvent/get", arguments_dict, call_id)`` suitable
         for inclusion in a ``methodCalls`` list.
     """
-    args: dict = {"accountId": account_id, "ids": ids}
-    if properties is not None:
-        args["properties"] = properties
-    return ("CalendarEvent/get", args, "ev-get-0")
+    return build_get("CalendarEvent/get", "ev-get-0", account_id, ids, properties)
 
 
 def parse_event_get(response_args: dict) -> list[dict]:
@@ -132,7 +137,7 @@ def build_event_query(
         limit: Maximum number of IDs to return. ``None`` means no limit.
         expand_recurrences: If true, the server returns one synthetic id per
             matching occurrence of a recurring event instead of a single id
-            for the whole series (JMAP Calendars §5.11). ``filter_condition``
+            for the whole series (draft-ietf-jmap-calendars section 5.11). ``filter_condition``
             must then include both ``after`` and ``before``, or the server
             rejects the call with ``invalidArguments`` (confirmed live).
             Without this, a recurring series is still found by ``after``/
@@ -156,59 +161,37 @@ def build_event_query(
         args["expandRecurrences"] = expand_recurrences
     if time_zone is not None:
         args["timeZone"] = time_zone
-    return ("CalendarEvent/query", args, "ev-query-0")
+    return ("CalendarEvent/query", args, _EVENT_QUERY_CALL_ID)
 
 
-def parse_event_query(response_args: dict) -> tuple[list[str], str, int]:
-    """Parse the arguments dict from a ``CalendarEvent/query`` response.
+def build_event_get_by_query_result(account_id: str, properties: list[str] | None = None) -> tuple:
+    """Build a ``CalendarEvent/get`` call that back-references the ids from
+    the ``CalendarEvent/query`` call :func:`build_event_query` builds.
 
-    Args:
-        response_args: The second element of a ``methodResponses`` entry
-            whose method name is ``"CalendarEvent/query"``.
-
-    Returns:
-        A 3-tuple ``(ids, query_state, total)``:
-
-        - ``ids``: Ordered list of matching event IDs.
-        - ``query_state``: Opaque state string for use with
-          ``CalendarEvent/queryChanges``.
-        - ``total``: Total number of matching events (may exceed ``len(ids)``
-          when a limit was applied).
-    """
-    ids: list[str] = response_args.get("ids", [])
-    query_state: str = response_args.get("queryState", "")
-    total: int = response_args.get("total", len(ids))
-    return ids, query_state, total
-
-
-def build_event_query_changes(
-    account_id: str,
-    since_query_state: str,
-    filter_condition: dict | None = None,
-    sort: list[dict] | None = None,
-    max_changes: int | None = None,
-) -> tuple:
-    """Build a ``CalendarEvent/queryChanges`` method call tuple.
+    Uses a JMAP result reference (:rfc:`8620#section-3.7`) instead of a
+    literal ``ids`` list, so the two calls can be batched into one HTTP
+    request without a round trip between them.
 
     Args:
-        account_id: The JMAP accountId to query.
-        since_query_state: The ``queryState`` string from a previous
-            ``CalendarEvent/query`` or ``CalendarEvent/queryChanges`` response.
-        filter_condition: Same filter as the original ``CalendarEvent/query`` call.
-        sort: Same sort as the original ``CalendarEvent/query`` call.
-        max_changes: Optional upper bound on the number of changes returned.
+        account_id: The JMAP accountId, must match the query call's.
+        properties: List of property names to return, or ``None`` for all.
 
     Returns:
-        A 3-tuple ``("CalendarEvent/queryChanges", arguments_dict, call_id)``.
+        A 3-tuple ``("CalendarEvent/get", arguments_dict, call_id)``, meant
+        to be appended after :func:`build_event_query`'s own return value in
+        the same ``methodCalls`` list.
     """
-    args: dict = {"accountId": account_id, "sinceQueryState": since_query_state}
-    if filter_condition is not None:
-        args["filter"] = filter_condition
-    if sort is not None:
-        args["sort"] = sort
-    if max_changes is not None:
-        args["maxChanges"] = max_changes
-    return ("CalendarEvent/queryChanges", args, "ev-qchanges-0")
+    args: dict = {
+        "accountId": account_id,
+        "#ids": {
+            "resultOf": _EVENT_QUERY_CALL_ID,
+            "name": "CalendarEvent/query",
+            "path": "/ids",
+        },
+    }
+    if properties is not None:
+        args["properties"] = properties
+    return ("CalendarEvent/get", args, _EVENT_GET_BY_QUERY_CALL_ID)
 
 
 def build_event_set_create(
@@ -220,12 +203,12 @@ def build_event_set_create(
 
     Args:
         account_id: The JMAP accountId.
-        events: Map of client-assigned creation ID → JSCalendar dict.
-            The creation IDs are ephemeral — they are used to correlate
-            server responses with individual creation requests within the
-            same batch call.
+        events: Map of client-assigned creation ID to JSCalendar dict.
+            The creation IDs are ephemeral, used only to correlate server
+            responses with individual creation requests within the same
+            batch call.
         send_scheduling_messages: If true, the server sends iTIP scheduling
-            messages to the event's participants (JMAP Calendars §5.9).
+            messages to the event's participants (draft-ietf-jmap-calendars section 5.9).
 
     Returns:
         A 3-tuple ``("CalendarEvent/set", arguments_dict, call_id)``.
@@ -250,13 +233,13 @@ def build_event_set_update(
 
     Args:
         account_id: The JMAP accountId.
-        updates: Map of event ID → partial patch dict.  Keys are property
+        updates: Map of event ID to partial patch dict.  Keys are property
             names (or JSON Pointer paths for nested properties); values are
             the new values.  Use ``None`` as a value to reset a property to
             its server default.
         send_scheduling_messages: If true, the server sends iTIP scheduling
             messages to the event's participants, or back to the organizer
-            if this account isn't the event's origin (JMAP Calendars §5.9).
+            if this account isn't the event's origin (draft-ietf-jmap-calendars section 5.9).
 
     Returns:
         A 3-tuple ``("CalendarEvent/set", arguments_dict, call_id)``.
@@ -284,7 +267,7 @@ def build_event_set_destroy(
         ids: List of event IDs to destroy.
         send_scheduling_messages: If true, and this account is the event's
             origin, the server sends an iTIP CANCEL to the event's
-            participants (JMAP Calendars §5.9.2.2).
+            participants (draft-ietf-jmap-calendars section 5.9.2.2).
 
     Returns:
         A 3-tuple ``("CalendarEvent/set", arguments_dict, call_id)``.

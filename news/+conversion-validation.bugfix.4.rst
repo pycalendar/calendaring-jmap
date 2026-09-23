@@ -1,0 +1,1 @@
+``ical_to_jscal`` now skips a VALARM with no ``TRIGGER`` (mandatory per RFC 5545 and RFC 8984) rather than emitting a JSCalendar Alert with no ``trigger`` property, which RFC 8984 forbids. Other, well-formed alarms on the same event are unaffected.

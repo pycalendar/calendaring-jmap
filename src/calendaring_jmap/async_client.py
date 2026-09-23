@@ -278,8 +278,8 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> None:
         """Update a calendar's name, color, or time zone.
 
-        ``name``, ``color``, and ``timeZone`` are per-user properties (JMAP
-        Calendars §4.3). Called by the calendar's owner, this changes the
+        ``name``, ``color``, and ``timeZone`` are per-user properties
+        (draft-ietf-jmap-calendars section 4.3). Called by the calendar's owner, this changes the
         value for everyone until a sharee sets their own override. Called by
         a sharee, it only ever changes that sharee's own view; it can never
         rename or recolor the calendar for the owner or anyone else it is
@@ -344,7 +344,7 @@ class AsyncJMAPClient(_JMAPClientBase):
 
         ``account_id`` must already be a resolved JMAP Principal ID, not an
         email address. This client has no ``Principal/query``/``Principal/get``
-        support yet (RFC 9670), so resolving an email address to a Principal
+        support yet (:rfc:`9670`), so resolving an email address to a Principal
         ID is left to the caller.
 
         Replaces ``account_id``'s entry in the calendar's ``shareWith`` map
@@ -395,9 +395,9 @@ class AsyncJMAPClient(_JMAPClientBase):
         """Set a calendar's default alerts for new events.
 
         ``alerts_with_time`` applies to timed events, ``alerts_without_time``
-        to all-day events (JMAP Calendars §4). Each is a map of alert ID to
-        Alert dict (RFC 8984 §4.5.2). Pass ``None`` to leave a property
-        unchanged; pass ``{}`` to clear it.
+        to all-day events (draft-ietf-jmap-calendars section 4). Each is a
+        map of alert ID to Alert dict (:rfc:`8984#section-4.5.2`). Pass
+        ``None`` to leave a property unchanged; pass ``{}`` to clear it.
 
         Args:
             account_id: The JMAP account owning ``calendar_id``. Defaults to
@@ -724,8 +724,8 @@ class AsyncJMAPClient(_JMAPClientBase):
     async def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.
 
-        Calls ``CalendarEvent/get`` with an empty ID list — no event data is
-        transferred, only the ``state`` field from the response.
+        Calls ``CalendarEvent/get`` with an empty ID list, so no event data
+        is transferred, only the ``state`` field from the response.
 
         Returns:
             Opaque state string. Pass to :meth:`get_objects_by_sync_token` to
@@ -790,7 +790,7 @@ class AsyncJMAPClient(_JMAPClientBase):
                 shared with you.
             send_scheduling_messages: If true, and this account is the
                 event's origin, the server sends an iTIP CANCEL to the
-                event's participants (JMAP Calendars §5.9.2.2).
+                event's participants (draft-ietf-jmap-calendars section 5.9.2.2).
 
         Raises:
             JMAPMethodError: If the server rejects the delete.

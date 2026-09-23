@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast, overload
 
+from calendaring_jmap.constants import UTC_DATETIME_FORMAT
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ def _to_utcdate(dt: datetime) -> str:
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(timezone.utc).strftime(UTC_DATETIME_FORMAT)
 
 
 @dataclass
@@ -52,14 +53,14 @@ class JMAPCalendar(Generic[_M]):
         color: Optional CSS color string (e.g. ``"#ff0000"``). Per-user,
             same override rule as ``name``.
         is_subscribed: Whether the user is subscribed to this calendar.
-        my_rights: Dict of right names → bool for the current user.
+        my_rights: Dict of right names to bool for the current user.
         sort_order: Hint for display ordering (lower = first). Per-user.
         is_visible: Whether the calendar should be displayed. Per-user.
         time_zone: IANA time zone used to resolve floating events on this
             calendar (e.g. for alerts, availability). ``None`` falls back to
             the account's own time zone. Per-user, same override rule as
             ``name``.
-        share_with: Map of Principal ID to a dict of right names → bool
+        share_with: Map of Principal ID to a dict of right names to bool
             (``mayReadItems``, ``mayWriteAll``, etc.). Only visible to and
             settable by users with the ``mayShare`` right; the server
             returns ``None`` here for anyone else. Not per-user: this is the
@@ -170,6 +171,19 @@ class JMAPCalendar(Generic[_M]):
             d["defaultAlertsWithoutTime"] = self.default_alerts_without_time
         return d
 
+    @staticmethod
+    def _normalize_search_range(searchargs: dict[str, Any]) -> tuple[Any, Any]:
+        """Return ``(start, end)`` from ``search()``'s kwargs, converting a
+        ``datetime`` value to JMAP's UTCDate string format. A caller-supplied
+        string is passed through unchanged."""
+        start = searchargs.get("start")
+        end = searchargs.get("end")
+        if isinstance(start, datetime):
+            start = _to_utcdate(start)
+        if isinstance(end, datetime):
+            end = _to_utcdate(end)
+        return start, end
+
     @overload
     def search(
         self: JMAPCalendar[Literal[False]], **searchargs: Any
@@ -199,12 +213,7 @@ class JMAPCalendar(Generic[_M]):
         """
         if self._is_async:
             return self._async_search(**searchargs)
-        start = searchargs.get("start")
-        end = searchargs.get("end")
-        if isinstance(start, datetime):
-            start = _to_utcdate(start)
-        if isinstance(end, datetime):
-            end = _to_utcdate(end)
+        start, end = self._normalize_search_range(searchargs)
         return self._bound_client._search(
             calendar_id=self.id,
             start=start,
@@ -217,12 +226,7 @@ class JMAPCalendar(Generic[_M]):
     async def _async_search(
         self: JMAPCalendar[Literal[True]], **searchargs: Any
     ) -> list[JMAPCalendarObject]:
-        start = searchargs.get("start")
-        end = searchargs.get("end")
-        if isinstance(start, datetime):
-            start = _to_utcdate(start)
-        if isinstance(end, datetime):
-            end = _to_utcdate(end)
+        start, end = self._normalize_search_range(searchargs)
         return await self._bound_async_client._search(
             calendar_id=self.id,
             start=start,

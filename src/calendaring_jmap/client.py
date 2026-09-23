@@ -31,6 +31,7 @@ from calendaring_jmap._methods.calendar import (
 from calendaring_jmap._methods.event import (
     build_event_changes,
     build_event_get,
+    build_event_get_by_query_result,
     build_event_query,
     build_event_set_create,
     build_event_set_destroy,
@@ -58,6 +59,7 @@ from calendaring_jmap.constants import (
     PARTICIPATION_STATUS_TENTATIVE,
     PRINCIPALS_CAPABILITY,
     TASK_CAPABILITY,
+    UTC_DATETIME_FORMAT,
 )
 from calendaring_jmap.convert import ical_to_jscal
 from calendaring_jmap.convert._patch import _NULL_FOR_UPDATE
@@ -149,7 +151,7 @@ class _JMAPClientBase:
 
     @staticmethod
     def _supports_principals(session: Session) -> bool:
-        """Return whether this account advertises RFC 9670 Principal support.
+        """Return whether this account advertises :rfc:`9670` Principal support.
 
         This is the real gate for ``Principal/getAvailability``, not the
         draft's own narrower ``:availability`` sub-capability: confirmed
@@ -163,7 +165,7 @@ class _JMAPClientBase:
     def _current_user_principal_id(session: Session) -> str | None:
         """Return the caller's own Principal id from the session, if any.
 
-        RFC 9670 §1.5.1: ``currentUserPrincipalId`` is a property of the
+        :rfc:`9670#section-1.5.1`: ``currentUserPrincipalId`` is a property of the
         ``urn:ietf:params:jmap:principals`` entry in ``accountCapabilities``.
         No ``Principal/query``/``Principal/get`` call is needed for this.
         """
@@ -228,18 +230,7 @@ class _JMAPClientBase:
         if text is not None:
             filter_dict["text"] = text
         query_call = build_event_query(account_id, filter_condition=filter_dict or None)
-        get_call = (
-            "CalendarEvent/get",
-            {
-                "accountId": account_id,
-                "#ids": {
-                    "resultOf": "ev-query-0",
-                    "name": "CalendarEvent/query",
-                    "path": "/ids",
-                },
-            },
-            "ev-get-1",
-        )
+        get_call = build_event_get_by_query_result(account_id)
         return [query_call, get_call]
 
     @staticmethod
@@ -261,18 +252,8 @@ class _JMAPClientBase:
             filter_condition={"after": start, "before": end},
             expand_recurrences=True,
         )
-        get_call = (
-            "CalendarEvent/get",
-            {
-                "accountId": account_id,
-                "#ids": {
-                    "resultOf": "ev-query-0",
-                    "name": "CalendarEvent/query",
-                    "path": "/ids",
-                },
-                "properties": ["start", "duration", "freeBusyStatus", "timeZone"],
-            },
-            "ev-get-1",
+        get_call = build_event_get_by_query_result(
+            account_id, properties=["start", "duration", "freeBusyStatus", "timeZone"]
         )
         return [query_call, get_call]
 
@@ -281,7 +262,7 @@ class _JMAPClientBase:
         """Convert a JSCalendar ``start``/``timeZone`` pair to a ``Z``-suffixed
         ``UTCDateTime`` string, matching what ``Principal/getAvailability``
         returns, so ``BusyInterval.start``/``.end`` have one consistent
-        format regardless of which path produced them (RFC 8984's own three
+        format regardless of which path produced them (:rfc:`8984`'s own three
         ``start`` shapes: already ``Z``-suffixed UTC, ``timeZone``-qualified,
         or floating/naive with neither, see ``jscal_to_ical._start_to_dtstart``).
         A floating start (no ``timeZone``) has no true UTC equivalent; it is
@@ -300,15 +281,15 @@ class _JMAPClientBase:
                 pass
         if naive.tzinfo is not None:
             naive = naive.astimezone(timezone.utc)
-        return naive.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return naive.strftime(UTC_DATETIME_FORMAT)
 
     @classmethod
     def _busy_intervals_from_events(cls, events: list[dict]) -> list[BusyInterval]:
         """Compute BusyInterval objects from raw event dicts for the fallback path.
 
-        RFC 8984 §4.4.2: ``freeBusyStatus`` is ``"free"`` or ``"busy"``,
-        default ``"busy"`` when absent. Events marked ``"free"`` don't
-        count toward busy time.
+        :rfc:`8984#section-4.4.2`: ``freeBusyStatus`` is ``"free"`` or
+        ``"busy"``, default ``"busy"`` when absent. Events marked ``"free"``
+        don't count toward busy time.
         """
         intervals = []
         for event in events:
@@ -320,8 +301,8 @@ class _JMAPClientBase:
             # re-apply timeZone to a value already made UTC by a Z-suffixed
             # start, double-converting it.
             start = cls._jscal_start_to_utc_datetime(event["start"], event.get("timeZone"))
-            end_dt = datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ") + duration
-            end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            end_dt = datetime.strptime(start, UTC_DATETIME_FORMAT) + duration
+            end = end_dt.strftime(UTC_DATETIME_FORMAT)
             interval = BusyInterval(start=start, end=end, busy_status=BUSY_STATUS_UNAVAILABLE)
             intervals.append(interval)
         return intervals
@@ -330,9 +311,10 @@ class _JMAPClientBase:
     def _build_event_update_patch(ical_str: str) -> tuple[dict, frozenset[str]]:
         """Build a JSCalendar PatchObject for a ``CalendarEvent/set`` update.
 
-        RFC 8620 merge semantics preserve properties absent from the patch, so
-        any optional property removed client-side must be explicitly nulled to
-        actually clear it server-side.  Returns the patch together with the set
+        :rfc:`8620#section-5.3` merge semantics preserve properties absent from
+        the patch, so any optional property removed client-side must be
+        explicitly nulled to actually clear it server-side.  Returns the patch
+        together with the set
         of keys that were null-injected purely for this cleanup (i.e. were not
         present in the converted iCalendar) so the caller can drop them if the
         server refuses to null a property it does not support.
@@ -355,9 +337,9 @@ class _JMAPClientBase:
 
         Some servers (e.g. Stalwart for ``recurrenceRule``) reject a property
         outright in ``CalendarEvent/set``, even when it is being set to ``null``.
-        Nulling such a property is harmless cleanup — it was absent from the new
-        iCalendar — so we report it as droppable, letting the caller retry the
-        update without it.
+        Nulling such a property is harmless cleanup: it was absent from the
+        new iCalendar, so we report it as droppable, letting the caller
+        retry the update without it.
 
         Returns the set of droppable keys when the failure is exactly this case,
         or ``None`` when the update succeeded or failed for a genuine reason (in
@@ -385,7 +367,7 @@ class _JMAPClientBase:
         return None
 
     # ---------------------------------------------------------------------------
-    # Shared response parsers — pure synchronous; used by both sync and async
+    # Shared response parsers, pure synchronous, used by both sync and async
     # clients.  Each method takes the raw ``methodResponses`` list returned by
     # ``_request()`` plus whatever extra context is needed to build the result
     # or raise an informative error, and returns/raises exactly what the public
@@ -407,6 +389,14 @@ class _JMAPClientBase:
         return []
 
     @staticmethod
+    def _no_set_response_error(api_url: str, set_method: str) -> JMAPMethodError:
+        """Build the error raised when a batched response never contains the
+        expected ``set_method`` entry at all (as opposed to containing it
+        with a per-object failure, which goes through :meth:`_raise_set_error`
+        instead). Shared by all three ``_parse_*_response`` methods below."""
+        return JMAPMethodError(url=api_url, reason=f"No {set_method} response")
+
+    @staticmethod
     def _parse_create_response(responses: list, api_url: str, set_method: str, parse_set) -> str:
         """Parse a ``*/set`` response for a create call using client creation id ``"new-0"``.
 
@@ -424,7 +414,7 @@ class _JMAPClientBase:
                         reason=f"{set_method} response missing created entry for new-0",
                     )
                 return created["new-0"]["id"]
-        raise JMAPMethodError(url=api_url, reason=f"No {set_method} response")
+        raise _JMAPClientBase._no_set_response_error(api_url, set_method)
 
     @staticmethod
     def _parse_update_response(
@@ -440,7 +430,7 @@ class _JMAPClientBase:
                 if object_id in not_updated:
                     _JMAPClientBase._raise_set_error(api_url, not_updated[object_id])
                 return
-        raise JMAPMethodError(url=api_url, reason=f"No {set_method} response")
+        raise _JMAPClientBase._no_set_response_error(api_url, set_method)
 
     @staticmethod
     def _parse_delete_response(
@@ -456,7 +446,7 @@ class _JMAPClientBase:
                 if object_id in not_destroyed:
                     _JMAPClientBase._raise_set_error(api_url, not_destroyed[object_id])
                 return
-        raise JMAPMethodError(url=api_url, reason=f"No {set_method} response")
+        raise _JMAPClientBase._no_set_response_error(api_url, set_method)
 
     @staticmethod
     def _find_participant_id_by_email(
@@ -779,8 +769,8 @@ class JMAPClient(_JMAPClientBase):
     ) -> None:
         """Update a calendar's name, color, or time zone.
 
-        ``name``, ``color``, and ``timeZone`` are per-user properties (JMAP
-        Calendars §4.3). Called by the calendar's owner, this changes the
+        ``name``, ``color``, and ``timeZone`` are per-user properties
+        (draft-ietf-jmap-calendars section 4.3). Called by the calendar's owner, this changes the
         value for everyone until a sharee sets their own override. Called by
         a sharee, it only ever changes that sharee's own view; it can never
         rename or recolor the calendar for the owner or anyone else it is
@@ -845,7 +835,7 @@ class JMAPClient(_JMAPClientBase):
 
         ``account_id`` must already be a resolved JMAP Principal ID, not an
         email address. This client has no ``Principal/query``/``Principal/get``
-        support yet (RFC 9670), so resolving an email address to a Principal
+        support yet (:rfc:`9670`), so resolving an email address to a Principal
         ID is left to the caller.
 
         Replaces ``account_id``'s entry in the calendar's ``shareWith`` map
@@ -895,9 +885,9 @@ class JMAPClient(_JMAPClientBase):
         """Set a calendar's default alerts for new events.
 
         ``alerts_with_time`` applies to timed events, ``alerts_without_time``
-        to all-day events (JMAP Calendars §4). Each is a map of alert ID to
-        Alert dict (RFC 8984 §4.5.2). Pass ``None`` to leave a property
-        unchanged; pass ``{}`` to clear it.
+        to all-day events (draft-ietf-jmap-calendars section 4). Each is a
+        map of alert ID to Alert dict (:rfc:`8984#section-4.5.2`). Pass
+        ``None`` to leave a property unchanged; pass ``{}`` to clear it.
 
         Args:
             account_id: The JMAP account owning ``calendar_id``. Defaults to
@@ -1056,14 +1046,15 @@ class JMAPClient(_JMAPClientBase):
 
         Finds the participant on ``event_id`` matching ``own_email`` and
         sets their ``participationStatus`` to accepted. Only that one
-        property is touched; per JMAP Calendars §5.9, a non-origin account
-        may never modify anything but its own participant properties.
+        property is touched; per draft-ietf-jmap-calendars section 5.9, a
+        non-origin account may never modify anything but its own
+        participant properties.
 
         There is no counter-proposal method (iTIP COUNTER): neither
-        RFC 8984 nor draft-ietf-jmap-calendars-29 define one. Confirmed
+        :rfc:`8984` nor draft-ietf-jmap-calendars-29 define one. Confirmed
         live against Cyrus and Stalwart that a non-origin account can still
         write ``start``/``duration`` directly through the server's own
-        rights model, but doing so is a plain update outside the §5.9
+        rights model, but doing so is a plain update outside the section 5.9
         per-user-property restriction above, not a supported scheduling
         primitive, and is not exposed as a method here.
 
@@ -1201,7 +1192,7 @@ class JMAPClient(_JMAPClientBase):
         section 2.2) first, using the current user's own Principal id (from
         the session, no extra round trip). Falls back per account to a
         ``CalendarEvent/query`` scan of that account's own calendars when
-        the account doesn't advertise RFC 9670 Principal support at all, the
+        the account doesn't advertise :rfc:`9670` Principal support at all, the
         call fails with ``unknownMethod``/``accountNotSupportedByMethod``, or
         ``account_id`` isn't the session's own account.
 
@@ -1288,8 +1279,8 @@ class JMAPClient(_JMAPClientBase):
     def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.
 
-        Calls ``CalendarEvent/get`` with an empty ID list — no event data is
-        transferred, only the ``state`` field from the response.
+        Calls ``CalendarEvent/get`` with an empty ID list, so no event data
+        is transferred, only the ``state`` field from the response.
 
         Returns:
             Opaque state string. Pass to :meth:`get_objects_by_sync_token` to
@@ -1354,7 +1345,7 @@ class JMAPClient(_JMAPClientBase):
                 shared with you.
             send_scheduling_messages: If true, and this account is the
                 event's origin, the server sends an iTIP CANCEL to the
-                event's participants (JMAP Calendars §5.9.2.2).
+                event's participants (draft-ietf-jmap-calendars section 5.9.2.2).
 
         Raises:
             JMAPMethodError: If the server rejects the delete.
