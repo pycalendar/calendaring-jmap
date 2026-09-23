@@ -215,6 +215,36 @@ class TestJMAPErrorHierarchy:
         with pytest.raises(JMAPError):
             raise JMAPAuthError()
 
+    def test_falls_back_to_standalone_hierarchy_when_caldav_missing(self, monkeypatch):
+        """calendaring_jmap.error subclasses caldav's DAVError/AuthorizationError
+        when caldav is importable, and falls back to its own standalone base
+        classes otherwise (see the module docstring). caldav is installed in
+        this dev/CI environment, so that fallback branch never runs unless
+        simulated here, matching _http.py's own module-reload pattern for the
+        same kind of optional-import branch."""
+        import importlib
+        import sys
+
+        import calendaring_jmap.error as error_mod
+
+        original_dict = dict(error_mod.__dict__)
+        for mod_name in list(sys.modules):
+            if mod_name == "caldav" or mod_name.startswith("caldav."):
+                monkeypatch.delitem(sys.modules, mod_name, raising=False)
+        monkeypatch.setitem(sys.modules, "caldav", None)
+        try:
+            importlib.reload(error_mod)
+            assert error_mod._CaldavDAVError.__bases__ == (Exception,)
+            assert issubclass(error_mod._CaldavAuthorizationError, error_mod._CaldavDAVError)
+            assert issubclass(error_mod.JMAPBaseError, error_mod._CaldavDAVError)
+            # Still a fully working exception hierarchy on its own terms.
+            e = error_mod.JMAPAuthError()
+            assert isinstance(e, error_mod._CaldavAuthorizationError)
+            assert e.error_type == "forbidden"
+        finally:
+            error_mod.__dict__.clear()
+            error_mod.__dict__.update(original_dict)
+
 
 from calendaring_jmap.constants import CALENDAR_CAPABILITY, TASK_CAPABILITY
 from calendaring_jmap.session import Session, fetch_session
