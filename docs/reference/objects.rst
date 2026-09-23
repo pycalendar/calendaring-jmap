@@ -10,4 +10,7 @@
 .. automodule:: calendaring_jmap.objects.calendar_object
    :members:
 
+.. automodule:: calendaring_jmap.objects.busy_interval
+   :members:
+
 See :doc:`errors` for the exception hierarchy.

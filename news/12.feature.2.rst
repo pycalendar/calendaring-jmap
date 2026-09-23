@@ -1,0 +1,1 @@
+``delete_event`` can now send an iTIP CANCEL to participants via a new ``send_scheduling_messages`` argument.

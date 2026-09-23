@@ -19,7 +19,7 @@ Change log
 New features
 ~~~~~~~~~~~~
 
-- ``JMAPError`` and its subclasses now subclass ``caldav.lib.error.DAVError`` if ``caldav`` is installed. Code catching ``DAVError`` around CalDAV calls will also catch JMAP errors. There is still no hard dependency on ``caldav``; without it, the error classes stay plain ``Exception`` subclasses. (`#10 <https://github.com/pycalendar/calendaring-jmap/issues/10>`_)
+- ``JMAPError`` and its subclasses now subclass ``caldav.lib.error.DAVError`` if ``caldav`` is installed, so code catching ``DAVError`` around CalDAV calls also catches JMAP errors. ``caldav`` is still not a hard dependency. (`#10 <https://github.com/pycalendar/calendaring-jmap/issues/10>`_)
 
 
 1.0.0 (2026-09-11)

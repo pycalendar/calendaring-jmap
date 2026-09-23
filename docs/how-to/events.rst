@@ -84,13 +84,12 @@ Use :meth:`~calendaring_jmap.objects.calendar.JMAPCalendar.search` on a calendar
     cal = calendars[0]
 
     # All events in this calendar
-    results = cal.search(event=True)
+    results = cal.search()
 
     # Time-range filter: events that overlap [start, end)
     #   start: only events ending after this datetime
     #   end:   only events starting before this datetime
     results = cal.search(
-        event=True,
         start="2026-01-01T00:00:00",
         end="2026-02-01T00:00:00",
     )
@@ -126,7 +125,7 @@ Use the async client
 
             # Calendar-scoped methods return coroutines when the calendar
             # was obtained from an async client
-            results = await cal.search(event=True)
+            results = await cal.search()
             obj = await cal.get_object_by_uid("some-uid@example.com")
             event_id = await cal.add_event(obj.get_icalendar_instance().to_ical().decode())
 

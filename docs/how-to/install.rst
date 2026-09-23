@@ -9,8 +9,6 @@ Install
 
     pip install calendaring-jmap
 
-Not yet published to PyPI.
-
 From source
 ===========
 
