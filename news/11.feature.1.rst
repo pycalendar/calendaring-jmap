@@ -1,0 +1,1 @@
+Added calendar management: ``create_calendar``, ``update_calendar``, ``delete_calendar``, ``share_calendar``, ``get_calendar_subscriptions``, and ``set_default_alerts`` on both ``JMAPClient`` and ``AsyncJMAPClient``.

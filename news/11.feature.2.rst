@@ -1,0 +1,1 @@
+``get_calendars`` and the event methods now take an ``account_id`` parameter to work with a calendar another user has shared with you.

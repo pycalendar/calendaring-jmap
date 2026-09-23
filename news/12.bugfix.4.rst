@@ -1,0 +1,1 @@
+``jscal_to_ical`` no longer double-wraps a non-mailto ``calendarAddress`` in a spurious ``mailto:`` prefix.

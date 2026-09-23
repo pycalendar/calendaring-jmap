@@ -1,0 +1,1 @@
+Added scheduling: ``accept_invitation``, ``decline_invitation``, ``tentatively_accept``, and ``send_invite`` on both ``JMAPClient`` and ``AsyncJMAPClient``.

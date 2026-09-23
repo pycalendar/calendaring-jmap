@@ -1,1 +1,1 @@
-``get_availability``'s ``CalendarEvent/query`` fallback now converts each event's start and end time to UTC correctly, using the event's own time zone. It previously returned the JSCalendar ``start`` value unconverted, which is only correct when the event's time zone happens to be UTC; for any other time zone the fallback path returned a busy interval offset from the real one.
+``get_availability``'s ``CalendarEvent/query`` fallback now converts each busy interval to UTC using the event's own time zone, instead of returning an offset time for any zone other than UTC.

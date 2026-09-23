@@ -81,6 +81,8 @@ Where ``<type>`` is one of: ``breaking``, ``removal``, ``feature``, ``bugfix``, 
 
 Write a short, user-facing description of the change inside the file: state what changed and, if it's a fix, what happened before. The issue link is generated automatically from the filename's number, so don't add one yourself. If your PR isn't tied to an issue, prefix the filename with ``+`` instead of a number (e.g. ``+conversion-validation.bugfix.rst``); towncrier accepts orphan fragments this way and just omits the issue link. Fragments are collected into ``CHANGES.rst`` at release time. Don't edit that file directly.
 
+Keep each fragment to one or two sentences. State the change; don't explain how it works internally, why it was needed, or how it was found, that belongs in the PR description, not the changelog. If your PR touches more than one distinct behavior (two separate bugs, or a feature plus an unrelated parameter addition), write one fragment per behavior (``11.feature.1.rst``, ``11.feature.2.rst``, and so on) instead of one fragment covering all of them. See any ``bugfix`` fragment in ``news/`` for the length and tone to aim for.
+
 If you used AI to help write the change, briefly disclose it in the fragment, per the :ref:`artificial-intelligence-policy`.
 
 To preview what the change log will look like:
