@@ -1,1 +1,1 @@
-``ical_to_jscal`` now raises ``ValueError`` when the master VEVENT is missing ``UID`` or ``DTSTART`` (both mandatory per RFC 5545), instead of a bare, undocumented ``KeyError``. ``ical_to_jscal`` also now raises ``ValueError`` when ``DTSTART`` and ``DTEND`` have mismatched value types (one ``DATE``, one ``DATE-TIME``, which RFC 5545 forbids), instead of an unexplained ``TypeError``.
+``ical_to_jscal`` now raises ``ValueError`` when the master VEVENT is missing ``UID`` or ``DTSTART`` (both mandatory per RFC 5545), instead of a bare, undocumented ``KeyError``.
