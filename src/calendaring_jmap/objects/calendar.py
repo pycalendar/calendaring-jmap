@@ -296,6 +296,8 @@ class JMAPCalendar(Generic[_M]):
 
         Raises:
             JMAPMethodError: If the server rejects the create request.
+            ValueError: Same conditions as
+                :meth:`~calendaring_jmap.client.JMAPClient.create_event`.
         """
         if self._is_async:
             return self._async_add_event(ical_str)

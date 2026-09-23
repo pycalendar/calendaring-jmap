@@ -94,6 +94,11 @@ class JMAPCalendarObject:
         Raises:
             JMAPMethodError: If no parent calendar is set (``parent`` is ``None``).
             RuntimeError: If called on an async-backed calendar.
+            ValueError: If an edit made via :meth:`edit_icalendar_instance`
+                leaves the object in a shape rejected by
+                :meth:`~calendaring_jmap.client.JMAPClient.update_event`
+                (e.g. removing ``UID``/``DTSTART``, or moving ``DTEND``
+                before ``DTSTART``).
         """
         if self.parent is None:
             raise JMAPMethodError(url="N/A", reason="Cannot save: no parent calendar is set")

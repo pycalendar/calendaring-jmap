@@ -3,4 +3,4 @@
 
 # Contributing
 
-See our [contributing guide](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html) for complete information on how to contribute to calendaring-jmap.
+See our [contributing guide](https://calendaring-jmap.readthedocs.io/en/stable/contribute.html) for complete information on how to contribute to calendaring-jmap.

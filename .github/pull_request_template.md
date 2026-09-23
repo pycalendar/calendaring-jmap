@@ -51,10 +51,10 @@ Do not edit the checkbox list items.
 To indicate that you completed an item, place an `x` inside the checkbox, such as `[x]`.
 -->
 
-- [ ] I added a change log entry, following the [change log instructions](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html#change-log).
-- [ ] I followed calendaring-jmap's [Artificial intelligence policy](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html#artificial-intelligence-policy) and disclosed my AI use in my commit messages and change log entry, if applicable.
+- [ ] I added a change log entry, following the [change log instructions](https://calendaring-jmap.readthedocs.io/en/stable/contribute.html#change-log).
+- [ ] I followed calendaring-jmap's [Artificial intelligence policy](https://calendaring-jmap.readthedocs.io/en/stable/contribute.html#artificial-intelligence-policy) and disclosed my AI use in my commit messages and change log entry, if applicable.
 - [ ] I added or updated tests, if applicable.
-- [ ] I ran and ensured all tests pass locally, following [Running tests](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html#running-tests).
+- [ ] I ran and ensured all tests pass locally, following [Running tests](https://calendaring-jmap.readthedocs.io/en/stable/contribute.html#running-tests).
 - [ ] If this changes a client method, I updated both `JMAPClient` and `AsyncJMAPClient` to keep the sync/async surfaces in parity.
 - [ ] If this changes iCalendar↔JSCalendar conversion, I checked the change against [RFC 8984](https://www.rfc-editor.org/rfc/rfc8984) and added a round-trip test.
 - [ ] I ran the integration tests against Cyrus, Stalwart, or both, if the change touches client/server interaction.

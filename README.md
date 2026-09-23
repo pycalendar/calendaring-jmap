@@ -35,7 +35,7 @@ with get_jmap_client(
         print(cal.name)
 ```
 
-See the [quickstart](https://calendaring-jmap.readthedocs.io/en/latest/tutorials/quickstart.html) for authentication options, error handling, and configuration from environment variables or a YAML file.
+See the [quickstart](https://calendaring-jmap.readthedocs.io/en/stable/tutorials/quickstart.html) for authentication options, error handling, and configuration from environment variables or a YAML file.
 
 ## Documentation
 
@@ -49,7 +49,7 @@ Full documentation: https://calendaring-jmap.readthedocs.io/
 
 ## Contributing
 
-See the [contributing guide](https://calendaring-jmap.readthedocs.io/en/latest/contribute.html).
+See the [contributing guide](https://calendaring-jmap.readthedocs.io/en/stable/contribute.html).
 
 ## Funding
 
