@@ -92,6 +92,12 @@ class AsyncJMAPClient(_JMAPClientBase):
               over username/password if provided.
         auth_type: Force a specific auth type: ``"basic"`` or ``"bearer"``.
         timeout: HTTP request timeout in seconds.
+
+    Unless a method's own docstring says otherwise, its ``account_id``
+    parameter is the JMAP account to operate on, defaulting to the
+    authenticated user's own primary account; pass a different account
+    (typically one shared with you via ``share_calendar``) to operate on
+    that account's data instead.
     """
 
     def _get_http_session(self) -> AsyncSession:
@@ -216,12 +222,10 @@ class AsyncJMAPClient(_JMAPClientBase):
         """Fetch all calendars for an account.
 
         Args:
-            account_id: The JMAP account to query. Defaults to the
-                authenticated user's own primary account. Pass a different
-                account here to browse calendars another user has shared with
-                you, once ``share_calendar`` has granted access; the session
-                only lists accounts you can actually reach (see
-                ``Session.raw["accounts"]``).
+            account_id: Pass a different account here to browse calendars
+                another user has shared with you, once ``share_calendar``
+                has granted access; the session only lists accounts you
+                can actually reach (see ``Session.raw["accounts"]``).
 
         Returns:
             List of :class:`~calendaring_jmap.objects.calendar.JMAPCalendar` objects.
@@ -286,9 +290,8 @@ class AsyncJMAPClient(_JMAPClientBase):
         shared with.
 
         Args:
-            account_id: The JMAP account owning ``calendar_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to update a calendar shared with you.
+            account_id: The account owning ``calendar_id``; pass the owner's
+                account here to update a calendar shared with you.
 
         Raises:
             JMAPMethodError: If the server rejects the update.
@@ -316,9 +319,8 @@ class AsyncJMAPClient(_JMAPClientBase):
                 calendar that still has events fails with a
                 ``calendarHasEvent`` error instead of deleting anything. Pass
                 ``True`` to remove those events along with the calendar.
-            account_id: The JMAP account owning ``calendar_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to delete a calendar shared with you.
+            account_id: The account owning ``calendar_id``; pass the owner's
+                account here to delete a calendar shared with you.
 
         Raises:
             JMAPMethodError: If the server rejects the delete. ``error_type``
@@ -359,10 +361,9 @@ class AsyncJMAPClient(_JMAPClientBase):
             account_id: The account to grant rights to.
             rights: Dict of right names to bool, e.g. ``{"mayReadItems": True}``.
                 Replaces any rights this account already had on this calendar.
-            owning_account_id: The JMAP account owning ``calendar_id``.
-                Defaults to the authenticated user's own primary account;
-                pass the owner's account here to re-share a calendar that
-                was itself shared with you (if you hold ``mayShare`` on it).
+            owning_account_id: The account owning ``calendar_id``; pass the
+                owner's account here to re-share a calendar that was
+                itself shared with you (if you hold ``mayShare`` on it).
 
         Raises:
             JMAPMethodError: If the server rejects the update, for example
@@ -400,10 +401,9 @@ class AsyncJMAPClient(_JMAPClientBase):
         ``None`` to leave a property unchanged; pass ``{}`` to clear it.
 
         Args:
-            account_id: The JMAP account owning ``calendar_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to set default alerts on a calendar
-                shared with you.
+            account_id: The account owning ``calendar_id``; pass the owner's
+                account here to set default alerts on a calendar shared
+                with you.
 
         Raises:
             JMAPMethodError: If the server rejects the update.
@@ -441,16 +441,18 @@ class AsyncJMAPClient(_JMAPClientBase):
         Args:
             calendar_id: The JMAP calendar ID to create the event in.
             ical_str: A VCALENDAR string representing the event.
-            account_id: The JMAP account owning ``calendar_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to add an event to a calendar shared
-                with you (see ``get_calendars(account_id=...)``).
+            account_id: The account owning ``calendar_id``; pass the owner's
+                account here to add an event to a calendar shared with you
+                (see ``get_calendars(account_id=...)``).
 
         Returns:
             The server-assigned JMAP event ID.
 
         Raises:
             JMAPMethodError: If the server rejects the create request.
+            ValueError: If ``ical_str`` is malformed in a way ``ical_to_jscal``
+                rejects (missing ``UID``/``DTSTART``, a negative duration,
+                mismatched ``DTSTART``/``DTEND`` value types).
         """
         return await self._create_event_impl(
             calendar_id, ical_str, account_id, send_scheduling_messages=False
@@ -470,8 +472,8 @@ class AsyncJMAPClient(_JMAPClientBase):
         Args:
             calendar_id: The JMAP calendar ID to create the event in.
             ical_str: A VCALENDAR string representing the event.
-            account_id: The JMAP account owning ``calendar_id``. Defaults to
-                the authenticated user's own primary account.
+            account_id: The account owning ``calendar_id``, same as
+                :meth:`create_event`.
 
         Returns:
             The server-assigned JMAP event ID.
@@ -480,6 +482,7 @@ class AsyncJMAPClient(_JMAPClientBase):
             JMAPMethodError: If the server rejects the create request, or
                 with ``error_type == "noSupportedScheduleMethods"`` if a
                 participant has no usable delivery method.
+            ValueError: Same conditions as :meth:`create_event`.
         """
         return await self._create_event_impl(
             calendar_id, ical_str, account_id, send_scheduling_messages=True
@@ -490,10 +493,9 @@ class AsyncJMAPClient(_JMAPClientBase):
 
         Args:
             event_id: The JMAP event ID to retrieve.
-            account_id: The JMAP account owning ``event_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to fetch an event on a calendar shared
-                with you.
+            account_id: The account owning ``event_id``; pass the owner's
+                account here to fetch an event on a calendar shared with
+                you.
 
         Returns:
             A :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
@@ -591,13 +593,15 @@ class AsyncJMAPClient(_JMAPClientBase):
         Args:
             event_id: The JMAP event ID to update.
             ical_str: A VCALENDAR string with the updated event data.
-            account_id: The JMAP account owning ``event_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to update an event on a calendar
-                shared with you.
+            account_id: The account owning ``event_id``; pass the owner's
+                account here to update an event on a calendar shared with
+                you.
 
         Raises:
             JMAPMethodError: If the server rejects the update.
+            ValueError: If ``ical_str`` is malformed in a way ``ical_to_jscal``
+                rejects (missing ``UID``/``DTSTART``, a negative duration,
+                mismatched ``DTSTART``/``DTEND`` value types).
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -654,9 +658,8 @@ class AsyncJMAPClient(_JMAPClientBase):
             start: Only events ending after this datetime (``YYYY-MM-DDTHH:MM:SS``).
             end: Only events starting before this datetime (``YYYY-MM-DDTHH:MM:SS``).
             text: Free-text search across title, description, locations, and participants.
-            account_id: The JMAP account to search. Defaults to the
-                authenticated user's own primary account; pass a different
-                account here to search a calendar shared with you.
+            account_id: Pass a different account here to search a calendar
+                shared with you.
 
         Returns:
             List of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
@@ -784,10 +787,9 @@ class AsyncJMAPClient(_JMAPClientBase):
 
         Args:
             event_id: The JMAP event ID to delete.
-            account_id: The JMAP account owning ``event_id``. Defaults to
-                the authenticated user's own primary account; pass the
-                owner's account here to delete an event on a calendar
-                shared with you.
+            account_id: The account owning ``event_id``; pass the owner's
+                account here to delete an event on a calendar shared with
+                you.
             send_scheduling_messages: If true, and this account is the
                 event's origin, the server sends an iTIP CANCEL to the
                 event's participants (draft-ietf-jmap-calendars section 5.9.2.2).

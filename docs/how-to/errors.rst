@@ -31,3 +31,17 @@ Catch specific error types
         print(f"Protocol error: {e}")
 
 See :doc:`../reference/errors` for what each error class means and the full list of JMAP method error types.
+
+Malformed iCalendar input
+==========================
+
+``create_event``, ``send_invite``, ``update_event``, and the calendar/object convenience methods that call them (``JMAPCalendar.add_event``, ``JMAPCalendarObject.save``) convert your iCalendar string to JSCalendar before sending it, and raise a plain ``ValueError``, not a ``JMAPError`` subclass, if it's missing a mandatory property (``UID``, ``DTSTART``) or has a negative duration. This happens client-side, before any request reaches the server, so catch it separately if you're constructing iCalendar strings by hand rather than passing through data a server already returned to you:
+
+.. code-block:: python
+
+    try:
+        event_id = client.create_event(calendar_id, ical)
+    except ValueError as e:
+        print(f"Malformed iCalendar: {e}")
+    except JMAPMethodError as e:
+        print(f"Server rejected the request: {e.error_type}, {e.reason}")
