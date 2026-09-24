@@ -349,10 +349,11 @@ def _link_to_attach(link: dict):
     if href.startswith("data:"):
         with urlopen(href) as resp:
             data = resp.read()
+            ## get_content_type() always returns a truthy default
+            ## ("text/plain") when the data URL has no media type, so this
+            ## is never empty.
             resolved_type = content_type or resp.headers.get_content_type()
-        params = {"ENCODING": "BASE64", "VALUE": "BINARY"}
-        if resolved_type:
-            params["FMTTYPE"] = str(resolved_type)
+        params = {"ENCODING": "BASE64", "VALUE": "BINARY", "FMTTYPE": str(resolved_type)}
         return icalendar.vBinary(data, params=params)
     attach = icalendar.vUri(href)
     if content_type:

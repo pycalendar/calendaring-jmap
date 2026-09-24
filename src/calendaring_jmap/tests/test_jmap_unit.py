@@ -2998,6 +2998,11 @@ class TestJscalToIcal:
         assert "FMTTYPE=image/png" in result
         assert "iVBORw0KGgo=" in result
 
+    def test_link_enclosure_without_href_not_converted(self):
+        jscal = _minimal_jscal(links={"l1": {"@type": "Link", "rel": "enclosure"}})
+        result = jscal_to_ical(jscal)
+        assert "ATTACH" not in result
+
     def test_link_non_enclosure_rel_not_converted(self):
         jscal = _minimal_jscal(
             links={
