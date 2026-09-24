@@ -9,12 +9,15 @@ information needed to make subsequent API calls.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from calendaring_jmap._http import AsyncSession, requests
 from calendaring_jmap.constants import CALENDAR_CAPABILITY
 from calendaring_jmap.error import JMAPAuthError, JMAPCapabilityError
+
+_URI_TEMPLATE_VAR = re.compile(r"\{(\w+)\}")
 
 
 @dataclass
@@ -29,6 +32,10 @@ class Session:
         state: Current session state string.
         account_capabilities: Capabilities dict for the chosen account.
         server_capabilities: Server-level capabilities dict.
+        upload_url: URI Template (:rfc:`8620#section-6.1`) for uploading a
+            blob, or ``None`` if the server omits it.
+        download_url: URI Template (:rfc:`8620#section-6.2`) for downloading
+            a blob, or ``None`` if the server omits it.
         raw: The full parsed Session JSON for anything not captured above.
     """
 
@@ -37,7 +44,34 @@ class Session:
     state: str
     account_capabilities: dict = field(default_factory=dict)
     server_capabilities: dict = field(default_factory=dict)
+    upload_url: str | None = None
+    download_url: str | None = None
     raw: dict = field(default_factory=dict)
+
+
+def _resolve_session_url(session_url: str, url: str) -> str:
+    """Resolve a URL (or URI Template) from the Session object against the
+    session endpoint's own URL.
+
+    Shared by ``apiUrl``, ``uploadUrl``, and ``downloadUrl``: RFC 8620 §2
+    says each SHOULD be absolute, but some servers (e.g. Cyrus) return a
+    relative path, and some (e.g. Stalwart) return an absolute URL whose
+    host matches but whose scheme/port doesn't match the one actually
+    connected through. ``urljoin``/``urlparse`` treat ``{``/``}`` as opaque
+    characters, so this is safe to use on a URI Template, not just a plain
+    URL.
+    """
+    resolved = urljoin(session_url, url)
+    session_parsed = urlparse(session_url)
+    resolved_parsed = urlparse(resolved)
+    if resolved_parsed.hostname == session_parsed.hostname and (
+        resolved_parsed.port != session_parsed.port
+        or resolved_parsed.scheme != session_parsed.scheme
+    ):
+        resolved = urlunparse(
+            resolved_parsed._replace(scheme=session_parsed.scheme, netloc=session_parsed.netloc)
+        )
+    return resolved
 
 
 def _parse_session_data(url: str, data: dict) -> Session:
@@ -47,23 +81,16 @@ def _parse_session_data(url: str, data: dict) -> Session:
             url=url,
             reason="Session response missing 'apiUrl'",
         )
+    api_url = _resolve_session_url(url, api_url)
 
-    # RFC 8620 §2 says apiUrl SHOULD be absolute, but some servers (e.g. Cyrus)
-    # return a relative path. Resolve it against the session endpoint URL.
-    api_url = urljoin(url, api_url)
-
-    # Some servers (e.g. Stalwart) advertise an api_url whose host matches ours
-    # but with a different scheme (https vs http) and/or port than the one we
-    # actually connected through. Rewrite both scheme and netloc to match the
-    # session endpoint so that subsequent calls succeed without TLS errors.
-    session_parsed = urlparse(url)
-    api_parsed = urlparse(api_url)
-    if api_parsed.hostname == session_parsed.hostname and (
-        api_parsed.port != session_parsed.port or api_parsed.scheme != session_parsed.scheme
-    ):
-        api_url = urlunparse(
-            api_parsed._replace(scheme=session_parsed.scheme, netloc=session_parsed.netloc)
-        )
+    ## "" and absent both become None, matching apiUrl's own check above;
+    ## _require_blob_url (client.py) only checks "is None".
+    upload_url = data.get("uploadUrl") or None
+    if upload_url:
+        upload_url = _resolve_session_url(url, upload_url)
+    download_url = data.get("downloadUrl") or None
+    if download_url:
+        download_url = _resolve_session_url(url, download_url)
 
     state = data.get("state", "")
     server_capabilities = data.get("capabilities", {})
@@ -101,7 +128,32 @@ def _parse_session_data(url: str, data: dict) -> Session:
         state=state,
         account_capabilities=account_capabilities,
         server_capabilities=server_capabilities,
+        upload_url=upload_url,
+        download_url=download_url,
         raw=data,
+    )
+
+
+def _expand_uri_template(template: str, variables: dict[str, str]) -> str:
+    """Expand an RFC 6570 Level 1 URI Template.
+
+    Used for the Session object's ``uploadUrl``/``downloadUrl`` (RFC 8620
+    section 6.1/6.2), both of which are Level 1 templates: each ``{var}``
+    is replaced by the corresponding value from ``variables``, percent-encoded
+    with every character outside ALPHA/DIGIT/-._~ escaped.
+
+    Args:
+        template: A URI Template string, e.g. ``"/upload/{accountId}/"``.
+        variables: Map of template variable name to its literal (unencoded)
+            value. A variable referenced in ``template`` but absent here is
+            left unexpanded.
+
+    Returns:
+        The expanded URI.
+    """
+    return _URI_TEMPLATE_VAR.sub(
+        lambda m: quote(variables[m.group(1)], safe="") if m.group(1) in variables else m.group(0),
+        template,
     )
 
 

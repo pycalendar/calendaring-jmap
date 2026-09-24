@@ -1,0 +1,1 @@
+Added ``upload_attachment``, ``download_attachment``, ``attach_to_event``, and ``get_event_attachments`` on both ``JMAPClient`` and ``AsyncJMAPClient``, for uploading binary data as a JMAP blob and attaching it to a calendar event.

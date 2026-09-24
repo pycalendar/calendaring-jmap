@@ -54,6 +54,7 @@ from calendaring_jmap.constants import (
     BUSY_STATUS_UNAVAILABLE,
     CALENDAR_CAPABILITY,
     CORE_CAPABILITY,
+    LINK_REL_ENCLOSURE,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
     PARTICIPATION_STATUS_TENTATIVE,
@@ -64,11 +65,17 @@ from calendaring_jmap.constants import (
 from calendaring_jmap.convert import ical_to_jscal
 from calendaring_jmap.convert._patch import _NULL_FOR_UPDATE
 from calendaring_jmap.convert._utils import _duration_to_timedelta
-from calendaring_jmap.error import _DEFAULT_ERROR_TYPE, JMAPAuthError, JMAPMethodError
+from calendaring_jmap.error import (
+    _DEFAULT_ERROR_TYPE,
+    JMAPAuthError,
+    JMAPCapabilityError,
+    JMAPMethodError,
+)
+from calendaring_jmap.objects.attachment import JMAPAttachment
 from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
-from calendaring_jmap.session import Session, fetch_session
+from calendaring_jmap.session import Session, _expand_uri_template, fetch_session
 
 log = logging.getLogger("calendaring_jmap")
 
@@ -584,6 +591,106 @@ class _JMAPClientBase:
                 return items[0]
         raise JMAPMethodError(url=api_url, reason="No Task/get response")
 
+    @staticmethod
+    def _build_attachment_patch(
+        existing_links: dict | None, name: str, content_type: str, download_url: str
+    ) -> dict:
+        """Build a ``links`` patch adding one attachment Link to ``existing_links``.
+
+        Replaces the whole ``links`` property rather than patching a single
+        new map key: confirmed live that both Cyrus and Stalwart reject a
+        ``{"links/<id>": {...}}`` patch into a map that doesn't yet contain
+        that key. ``existing_links`` may be ``None`` (an absent or explicitly
+        null ``links`` property both mean "no links").
+        """
+        link_id = str(uuid.uuid4())
+        return {
+            "links": {
+                **(existing_links or {}),
+                link_id: {
+                    "@type": "Link",
+                    "href": download_url,
+                    "title": name,
+                    "contentType": content_type,
+                    "rel": LINK_REL_ENCLOSURE,
+                },
+            }
+        }
+
+    @staticmethod
+    def _parse_event_attachments(event_data: dict) -> list[JMAPAttachment]:
+        """Return the attachment Links from an event's ``links`` property.
+
+        ``links`` may be absent (the common case for an event with none) or
+        explicitly ``None``; both are treated as "no links".
+        """
+        return [
+            JMAPAttachment.from_jmap(link_id, link_data)
+            for link_id, link_data in (event_data.get("links") or {}).items()
+            if JMAPAttachment.is_attachment(link_data)
+        ]
+
+    @staticmethod
+    def _build_upload_headers(content_type: str) -> dict:
+        """Return headers for a raw blob upload, overriding the session default."""
+        return {"Content-Type": content_type}
+
+    @staticmethod
+    def _build_download_headers() -> dict:
+        """Return headers for a raw blob download, overriding the session
+        default ``Accept: application/json`` (set for JMAP method calls,
+        wrong for a request whose response body is arbitrary binary data)."""
+        return {"Accept": "*/*"}
+
+    @staticmethod
+    def _check_blob_response(response, url: str) -> None:
+        """Raise on an HTTP error from a raw blob upload or download.
+
+        Shared by :meth:`upload_attachment`/:meth:`download_attachment` on
+        both the sync and async client. Same 401/403 handling as
+        :func:`~calendaring_jmap.session.fetch_session`; any other non-2xx
+        (e.g. 404 for an unknown blobId, confirmed live on both Cyrus and
+        Stalwart) surfaces as a plain HTTP error, since neither blob call
+        has a JMAP methodResponses envelope to carry a JMAP-style error in.
+        """
+        if response.status_code in (401, 403):
+            raise JMAPAuthError(url=url, reason=f"HTTP {response.status_code} from blob URL")
+        response.raise_for_status()
+
+    @staticmethod
+    def _require_blob_url(url: str | None, which: str, api_url: str) -> str:
+        """Return ``url``, raising clearly if the server omitted it from Session."""
+        if url is None:
+            raise JMAPCapabilityError(
+                url=api_url,
+                reason=f"Server did not advertise a {which} in its Session object",
+            )
+        return url
+
+    @classmethod
+    def _build_blob_download_url(
+        cls, session: Session, account_id: str, blob_id: str, content_type: str, name: str
+    ) -> str:
+        """Expand the Session's ``downloadUrl`` template for one blob.
+
+        Shared by :meth:`download_attachment`/:meth:`attach_to_event` on
+        both the sync and async client. ``content_type``/``name`` are taken
+        as given: :meth:`download_attachment` passes ``or ""`` for its own
+        optional parameters (see its docstring for why that's safe);
+        :meth:`attach_to_event` always has real values, since both become
+        properties on the Link it writes.
+        """
+        download_url = cls._require_blob_url(session.download_url, "downloadUrl", session.api_url)
+        return _expand_uri_template(
+            download_url,
+            {
+                "accountId": account_id,
+                "blobId": blob_id,
+                "type": content_type,
+                "name": name,
+            },
+        )
+
 
 class JMAPClient(_JMAPClientBase):
     """Synchronous JMAP client for calendar operations.
@@ -996,6 +1103,177 @@ class JMAPClient(_JMAPClientBase):
         target_account = self._resolve_account(session, account_id)
         responses = self._request([build_event_get(target_account, ids=[event_id])])
         return self._parse_get_event_response(responses, session.api_url, event_id)
+
+    def upload_attachment(
+        self, data: bytes, content_type: str, account_id: str | None = None
+    ) -> str:
+        """Upload binary data as a JMAP blob (:rfc:`8620#section-6.1`).
+
+        Unlike every other method on this client, this is a raw HTTP POST
+        to the Session's ``uploadUrl``, not a JMAP method call: there is no
+        ``methodResponses`` envelope, the server returns a flat JSON object
+        instead.
+
+        Args:
+            data: The raw bytes to upload.
+            content_type: Media type of ``data``, sent as the request's
+                ``Content-Type`` header.
+            account_id: The account to upload into.
+
+        Returns:
+            The server-assigned blob id, for use with
+            :meth:`download_attachment` or :meth:`attach_to_event`.
+
+        Raises:
+            JMAPCapabilityError: If the server's Session object has no
+                ``uploadUrl``.
+            JMAPAuthError: On HTTP 401 or 403.
+            requests.HTTPError: On any other non-2xx HTTP response.
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        upload_url = self._require_blob_url(session.upload_url, "uploadUrl", session.api_url)
+        url = _expand_uri_template(upload_url, {"accountId": target_account})
+        response = self._get_http_session().post(
+            url, data=data, headers=self._build_upload_headers(content_type), timeout=self.timeout
+        )
+        self._check_blob_response(response, url)
+        return response.json()["blobId"]
+
+    def download_attachment(
+        self,
+        blob_id: str,
+        content_type: str | None = None,
+        filename: str | None = None,
+        account_id: str | None = None,
+    ) -> bytes:
+        """Download a JMAP blob by id (:rfc:`8620#section-6.2`).
+
+        Raw HTTP GET to the Session's ``downloadUrl``; the response body is
+        the raw binary content.
+
+        Args:
+            blob_id: The blob id, as returned by :meth:`upload_attachment`.
+            content_type: Media type of the blob, if known. Confirmed live
+                against Cyrus and Stalwart that both look up a blob by
+                ``blobId`` alone: an omitted or wrong ``content_type``/
+                ``filename`` only affects the response's own
+                ``Content-Type``/``Content-Disposition`` headers, not
+                whether the download succeeds.
+            filename: Filename to suggest for the download, if known.
+            account_id: The account owning ``blob_id``.
+
+        Returns:
+            The blob's raw bytes.
+
+        Raises:
+            JMAPCapabilityError: If the server's Session object has no
+                ``downloadUrl``.
+            JMAPAuthError: On HTTP 401 or 403.
+            requests.HTTPError: On any other non-2xx HTTP response, including
+                404 for an unknown ``blob_id`` (confirmed live on both Cyrus
+                and Stalwart).
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        url = self._build_blob_download_url(
+            session, target_account, blob_id, content_type or "", filename or ""
+        )
+        response = self._get_http_session().get(
+            url, headers=self._build_download_headers(), timeout=self.timeout
+        )
+        self._check_blob_response(response, url)
+        ## requests.Response.content is typed as bytes but can actually be
+        ## None (status_code == 0 or raw is None, e.g. some connection-level
+        ## failures represented as a response rather than an exception);
+        ## _check_blob_response already confirmed a successful response to a
+        ## GET, so this only guards a genuinely unusual case.
+        return response.content or b""
+
+    def attach_to_event(
+        self,
+        event_id: str,
+        blob_id: str,
+        name: str,
+        content_type: str,
+        account_id: str | None = None,
+    ) -> None:
+        """Attach an uploaded blob to a calendar event.
+
+        Adds one Link to the event's ``links`` property (:rfc:`8984#section-4.2.7`)
+        with ``rel: "enclosure"``. The Link's ``href`` is set to ``blob_id``'s own
+        download URL, not ``blobId``: draft-ietf-jmap-calendars section 5.3 allows
+        a Link to carry ``blobId`` directly, but confirmed live against Cyrus and
+        Stalwart that neither server persists it (Cyrus rejects the update;
+        Stalwart accepts it and silently drops the Link). ``href`` round-trips
+        correctly on both.
+
+        Not safe against a concurrent write to this event's ``links``: reads the
+        current value, then replaces the whole property with the merged result,
+        with no ``ifInState`` guard. Whichever write lands second wins silently.
+        Serialize calls for a given ``event_id`` if that matters to your use case.
+
+        Known Cyrus limitation: Cyrus accepts a Link with ``rel: "enclosure"``
+        but does not reliably persist that property, so :meth:`get_event_attachments`
+        may not find what this method just wrote. See
+        :meth:`JMAPAttachment.is_attachment
+        <calendaring_jmap.objects.attachment.JMAPAttachment.is_attachment>`
+        for the full finding. Stalwart is unaffected.
+
+        Args:
+            event_id: The JMAP event ID to attach to.
+            blob_id: The blob id, as returned by :meth:`upload_attachment`.
+            name: Human-readable title for the attachment.
+            content_type: Media type of the blob.
+            account_id: The account owning ``event_id``.
+
+        Raises:
+            JMAPCapabilityError: If the server's Session object has no
+                ``downloadUrl``.
+            JMAPMethodError: If the event is not found, or the server
+                rejects the update.
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        url = self._build_blob_download_url(session, target_account, blob_id, content_type, name)
+        responses = self._request(
+            [build_event_get(target_account, ids=[event_id], properties=["links"])]
+        )
+        event = self._parse_get_event_response(responses, session.api_url, event_id)
+        patch = self._build_attachment_patch(event.data.get("links", {}), name, content_type, url)
+        call = build_event_set_update(target_account, {event_id: patch})
+        responses = self._request([call])
+        self._parse_update_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set, event_id
+        )
+
+    def get_event_attachments(
+        self, event_id: str, account_id: str | None = None
+    ) -> list[JMAPAttachment]:
+        """Return the attachments on a calendar event.
+
+        Args:
+            event_id: The JMAP event ID to inspect.
+            account_id: The account owning ``event_id``.
+
+        Returns:
+            List of :class:`~calendaring_jmap.objects.attachment.JMAPAttachment`,
+            one per ``links`` entry whose ``rel`` is ``"enclosure"``
+            (see :meth:`JMAPAttachment.is_attachment
+            <calendaring_jmap.objects.attachment.JMAPAttachment.is_attachment>`
+            for the known Cyrus limitation). Other ``links`` entries (e.g. a
+            conference URL) are not included.
+
+        Raises:
+            JMAPMethodError: If the event is not found.
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        responses = self._request(
+            [build_event_get(target_account, ids=[event_id], properties=["links"])]
+        )
+        event = self._parse_get_event_response(responses, session.api_url, event_id)
+        return self._parse_event_attachments(event.data)
 
     def _find_own_participant_id(
         self, event_id: str, own_email: str, account_id: str | None = None

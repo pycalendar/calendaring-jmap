@@ -1,0 +1,1 @@
+``attach_to_event`` sets ``href`` on the attachment's Link, not ``blobId``. The calendars draft allows a Link to carry a blob id directly, but neither Cyrus nor Stalwart actually persists it: Cyrus rejects it outright, and Stalwart silently drops it. A direct download URL round-trips correctly on both.

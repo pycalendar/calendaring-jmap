@@ -40,6 +40,7 @@ from calendaring_jmap.error import (
     JMAPError,
     JMAPMethodError,
 )
+from calendaring_jmap.objects.attachment import JMAPAttachment
 from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
@@ -90,6 +91,7 @@ def get_async_jmap_client(**kwargs) -> AsyncJMAPClient | None:
 __all__ = [
     "AsyncJMAPClient",
     "BusyInterval",
+    "JMAPAttachment",
     "JMAPAuthError",
     "JMAPCalendar",
     "JMAPCalendarObject",

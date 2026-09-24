@@ -63,11 +63,16 @@ from calendaring_jmap.constants import (
     PARTICIPATION_STATUS_TENTATIVE,
 )
 from calendaring_jmap.convert import ical_to_jscal
-from calendaring_jmap.error import _DEFAULT_ERROR_TYPE, JMAPAuthError, JMAPMethodError
+from calendaring_jmap.error import (
+    _DEFAULT_ERROR_TYPE,
+    JMAPAuthError,
+    JMAPMethodError,
+)
+from calendaring_jmap.objects.attachment import JMAPAttachment
 from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
-from calendaring_jmap.session import Session, async_fetch_session
+from calendaring_jmap.session import Session, _expand_uri_template, async_fetch_session
 
 log = logging.getLogger("calendaring_jmap")
 
@@ -510,6 +515,90 @@ class AsyncJMAPClient(_JMAPClientBase):
         target_account = self._resolve_account(session, account_id)
         responses = await self._request([build_event_get(target_account, ids=[event_id])])
         return self._parse_get_event_response(responses, session.api_url, event_id)
+
+    async def upload_attachment(
+        self, data: bytes, content_type: str, account_id: str | None = None
+    ) -> str:
+        """Upload binary data as a JMAP blob.
+
+        See :meth:`JMAPClient.upload_attachment` for the full semantics.
+        """
+        session = await self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        upload_url = self._require_blob_url(session.upload_url, "uploadUrl", session.api_url)
+        url = _expand_uri_template(upload_url, {"accountId": target_account})
+        response = await self._get_http_session().post(
+            url, data=data, headers=self._build_upload_headers(content_type), timeout=self.timeout
+        )
+        self._check_blob_response(response, url)
+        return response.json()["blobId"]
+
+    async def download_attachment(
+        self,
+        blob_id: str,
+        content_type: str | None = None,
+        filename: str | None = None,
+        account_id: str | None = None,
+    ) -> bytes:
+        """Download a JMAP blob by id.
+
+        See :meth:`JMAPClient.download_attachment` for the full semantics.
+        """
+        session = await self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        url = self._build_blob_download_url(
+            session, target_account, blob_id, content_type or "", filename or ""
+        )
+        response = await self._get_http_session().get(
+            url, headers=self._build_download_headers(), timeout=self.timeout
+        )
+        self._check_blob_response(response, url)
+        ## niquests types Response.content as bytes | None (it covers responses
+        ## with no buffered body, e.g. HEAD); _check_blob_response already
+        ## confirmed a successful response to a GET, so content is always bytes
+        ## in practice here.
+        return response.content or b""
+
+    async def attach_to_event(
+        self,
+        event_id: str,
+        blob_id: str,
+        name: str,
+        content_type: str,
+        account_id: str | None = None,
+    ) -> None:
+        """Attach an uploaded blob to a calendar event.
+
+        See :meth:`JMAPClient.attach_to_event` for the full semantics.
+        """
+        session = await self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        url = self._build_blob_download_url(session, target_account, blob_id, content_type, name)
+        responses = await self._request(
+            [build_event_get(target_account, ids=[event_id], properties=["links"])]
+        )
+        event = self._parse_get_event_response(responses, session.api_url, event_id)
+        patch = self._build_attachment_patch(event.data.get("links", {}), name, content_type, url)
+        call = build_event_set_update(target_account, {event_id: patch})
+        responses = await self._request([call])
+        self._parse_update_response(
+            responses, session.api_url, "CalendarEvent/set", parse_event_set, event_id
+        )
+
+    async def get_event_attachments(
+        self, event_id: str, account_id: str | None = None
+    ) -> list[JMAPAttachment]:
+        """Return the attachments on a calendar event.
+
+        See :meth:`JMAPClient.get_event_attachments` for the full semantics.
+        """
+        session = await self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        responses = await self._request(
+            [build_event_get(target_account, ids=[event_id], properties=["links"])]
+        )
+        event = self._parse_get_event_response(responses, session.api_url, event_id)
+        return self._parse_event_attachments(event.data)
 
     async def _find_own_participant_id(
         self, event_id: str, own_email: str, account_id: str | None = None

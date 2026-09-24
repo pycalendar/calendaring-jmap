@@ -32,5 +32,6 @@ _NULL_FOR_UPDATE: frozenset[str] = frozenset(
         "recurrenceOverrides",
         "participants",
         "alerts",
+        "links",
     }
 )

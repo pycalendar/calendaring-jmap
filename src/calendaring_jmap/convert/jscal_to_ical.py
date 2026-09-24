@@ -14,12 +14,14 @@ or produced by ical_to_jscal). Returns a VCALENDAR string.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from urllib.request import urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import icalendar
 from icalendar import vCalAddress, vText
 
 from calendaring_jmap.constants import (
+    LINK_REL_ENCLOSURE,
     LOCAL_DATETIME_FORMAT,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
@@ -318,6 +320,46 @@ def _alert_to_valarm(alert: dict) -> icalendar.Alarm:
     return alarm
 
 
+def _link_to_attach(link: dict):
+    """Convert a JSCalendar Link dict to an icalendar ATTACH value.
+
+    Only converts a Link whose ``rel`` is ``"enclosure"``
+    (``constants.LINK_REL_ENCLOSURE``); other ``rel`` values are left alone
+    (not emitted as ATTACH, IMAGE, or LINK), matching
+    :func:`~calendaring_jmap.convert.ical_to_jscal._attach_to_link`'s
+    narrower-than-the-draft scope in the other direction. Returns ``None``
+    for a Link this function doesn't convert.
+
+    A ``data:`` URL ``href`` (RFC 2397, produced by the same function for a
+    binary-form ATTACH) converts back to inline ``ENCODING=BASE64;
+    VALUE=BINARY`` using the stdlib's own RFC 2397 support
+    (:func:`urllib.request.urlopen`), rather than re-implementing data URL
+    parsing by hand. Any other ``href`` converts to a plain URI-form ATTACH.
+
+    See :meth:`JMAPAttachment.is_attachment
+    <calendaring_jmap.objects.attachment.JMAPAttachment.is_attachment>` for
+    a known Cyrus limitation affecting the ``rel`` this function filters on.
+    """
+    if link.get("rel") != LINK_REL_ENCLOSURE:
+        return None
+    href = link.get("href")
+    if not href:
+        return None
+    content_type = link.get("contentType")
+    if href.startswith("data:"):
+        with urlopen(href) as resp:
+            data = resp.read()
+            resolved_type = content_type or resp.headers.get_content_type()
+        params = {"ENCODING": "BASE64", "VALUE": "BINARY"}
+        if resolved_type:
+            params["FMTTYPE"] = str(resolved_type)
+        return icalendar.vBinary(data, params=params)
+    attach = icalendar.vUri(href)
+    if content_type:
+        attach.params["FMTTYPE"] = str(content_type)
+    return attach
+
+
 def _keywords_to_categories(keywords: dict) -> list[str]:
     """Convert JSCalendar keywords map to a list of CATEGORIES strings."""
     return [k for k, v in keywords.items() if v]
@@ -494,6 +536,11 @@ def jscal_to_ical(jscal: dict) -> str:
     for alert in (jscal.get("alerts") or {}).values():
         alarm = _alert_to_valarm(alert)
         event.add_component(alarm)
+
+    for link in (jscal.get("links") or {}).values():
+        attach = _link_to_attach(link)
+        if attach is not None:
+            event.add("attach", attach)
 
     cal.add_component(event)
 

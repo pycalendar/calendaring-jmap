@@ -13,4 +13,7 @@
 .. automodule:: calendaring_jmap.objects.busy_interval
    :members:
 
+.. automodule:: calendaring_jmap.objects.attachment
+   :members:
+
 See :doc:`errors` for the exception hierarchy.

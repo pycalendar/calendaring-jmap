@@ -1,0 +1,1 @@
+``update_event`` now clears an event's attachments when they're removed from the iCalendar it's given, instead of silently leaving the server's old ``links`` in place.
