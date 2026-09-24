@@ -42,6 +42,13 @@ PARTICIPATION_STATUS_DELEGATED = "delegated"
 # they aren't defined here as constants.
 BUSY_STATUS_UNAVAILABLE = "unavailable"
 
+#: Link.rel value (:rfc:`8984#section-1.4.11`) marking a Link as an
+#: attachment. The "rel" property itself is defined in RFC 8984, but this
+#: specific value originates in the IANA Link Relations registry's
+#: original seed list, :rfc:`4287#section-4.2.7.2` (Atom), not RFC 8984
+#: itself.
+LINK_REL_ENCLOSURE = "enclosure"
+
 #: :meth:`~datetime.datetime.strftime`/:meth:`~datetime.datetime.strptime`
 #: format for a JMAP ``UTCDateTime`` string (:rfc:`8984#section-1.4.4`):
 #: always UTC, always ``Z``-suffixed, no fractional seconds.

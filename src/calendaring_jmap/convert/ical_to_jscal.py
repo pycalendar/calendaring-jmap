@@ -21,6 +21,7 @@ import icalendar
 from icalendar.timezone.tzid import tzid_from_dt
 
 from calendaring_jmap.constants import (
+    LINK_REL_ENCLOSURE,
     LOCAL_DATETIME_FORMAT,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
@@ -62,6 +63,21 @@ _CUTYPE_MAP = {
 }
 
 _BYDAY_ABBR = {"SU", "MO", "TU", "WE", "TH", "FR", "SA"}
+
+
+def _as_list(value) -> list:
+    """Normalise an icalendar multi-instance property to a list.
+
+    ``Component.get()`` returns ``None`` when the property is absent, the
+    single parsed value when the property appears once, or a list when it
+    appears more than once (e.g. ``ATTENDEE``, ``ATTACH``). Every call site
+    that reads such a property needs this same normalisation.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
 
 
 def _prop_date_or_datetime(prop) -> datetime | date:
@@ -361,6 +377,36 @@ def _valarm_to_alert(alarm) -> tuple[str, dict] | None:
     return alert_id, alert
 
 
+def _attach_to_link(attach) -> tuple[str, dict]:
+    """Convert an ATTACH property to a (link_id, Link dict) tuple.
+
+    Per draft-ietf-calext-jscalendar-icalendar section 2.3.3: a URI-form
+    ATTACH (``icalendar.vUri``) converts to ``href`` as-is; a binary-form
+    ATTACH (``icalendar.vBinary``, RFC 5545 section 3.8.1.1's inline
+    ``ENCODING=BASE64;VALUE=BINARY`` form) converts to a ``data:`` URL
+    (:rfc:`2397`), with ``FMTTYPE`` (if set) becoming both the data URL's
+    media type and ``contentType``. ``rel`` is always set to ``"enclosure"``
+    (``constants.LINK_REL_ENCLOSURE``): unlike JSCalendar's general Link object,
+    RFC 5545's ATTACH has no notion of a link that isn't an attachment, so
+    every ATTACH converts as one. This is narrower than the draft's own full
+    Link/ATTACH/IMAGE/LINK mapping (see draft-ietf-calext-jscalendar-icalendar
+    section 3.4), which is out of scope here; only the attachment case this
+    project's own attach_to_event/get_event_attachments need is covered.
+    """
+    link_id = str(uuid.uuid4())
+    content_type = attach.params.get("FMTTYPE")
+    link: dict = {"@type": "Link", "rel": LINK_REL_ENCLOSURE}
+    if isinstance(attach, icalendar.vBinary):
+        # RFC 2397 section 3: dataurl := "data:" [ mediatype ] [ ";base64" ] "," data
+        media_type = str(content_type) if content_type else ""
+        link["href"] = f"data:{media_type};base64,{attach.base64data}"
+    else:
+        link["href"] = str(attach)
+    if content_type:
+        link["contentType"] = str(content_type)
+    return link_id, link
+
+
 def _location_str_to_jscal(location_str: str) -> dict:
     """Convert a LOCATION string to a JSCalendar locations map entry.
 
@@ -576,15 +622,7 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
         pid, p = _organizer_to_participant(organizer)
         participants[pid] = p
 
-    # .get() returns a single vCalAddress or a list; normalise to list
-    raw_attendees = master.get("ATTENDEE")
-    if raw_attendees is None:
-        attendees = []
-    elif isinstance(raw_attendees, list):
-        attendees = raw_attendees
-    else:
-        attendees = [raw_attendees]
-    for attendee in attendees:
+    for attendee in _as_list(master.get("ATTENDEE")):
         pid, p = _attendee_to_participant(attendee)
         participants[pid] = p
 
@@ -651,5 +689,13 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
                 alerts[alert_id] = alert
         if alerts:
             jscal["alerts"] = alerts
+
+    attaches = _as_list(master.get("ATTACH"))
+    if attaches:
+        links: dict = {}
+        for attach in attaches:
+            link_id, link = _attach_to_link(attach)
+            links[link_id] = link
+        jscal["links"] = links
 
     return jscal

@@ -1,0 +1,1 @@
+``ical_to_jscal``/``jscal_to_ical`` now convert the iCalendar ``ATTACH`` property to and from the JSCalendar ``links`` property, for both URI and inline binary forms.

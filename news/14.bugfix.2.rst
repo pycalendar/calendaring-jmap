@@ -1,0 +1,1 @@
+On Cyrus, ``get_event_attachments`` may not find an attachment ``attach_to_event`` just wrote. Cyrus accepts a Link with ``rel: "enclosure"`` without error but does not reliably persist that property, and ``get_event_attachments`` filters on it. Stalwart is unaffected.

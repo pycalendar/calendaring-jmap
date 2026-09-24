@@ -28,6 +28,7 @@ except ImportError:
     from requests.auth import HTTPBasicAuth  # type: ignore[assignment,no-redef]
 
 from calendaring_jmap import AsyncJMAPClient, JMAPCalendarObject, JMAPClient
+from calendaring_jmap._http import requests
 from calendaring_jmap.constants import CALENDAR_CAPABILITY
 from calendaring_jmap.convert import jscal_to_ical
 from calendaring_jmap.error import JMAPMethodError
@@ -830,6 +831,33 @@ class TestJMAPEventIntegration:
         finally:
             event_client.delete_event(event_id)
 
+    def test_attach_property_roundtrip(self, event_client, event_calendar_id, server):
+        """ical_to_jscal/jscal_to_ical convert ATTACH <-> links (rel:
+        "enclosure"). On Cyrus, the fetched event's ATTACH is lost on the
+        way back out, since it doesn't persist rel (see
+        JMAPAttachment.is_attachment); Stalwart round-trips correctly.
+        """
+        ical = _vevent_ical(
+            "Attach Roundtrip Event",
+            datetime(2026, 7, 20, 9, 0, 0, tzinfo=timezone.utc),
+            timedelta(hours=1),
+            extra_lines="ATTACH;FMTTYPE=application/pdf:https://example.com/report.pdf\r\n",
+        )
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            fetched = jscal_to_ical(event_client.get_event(event_id).get_data())
+            if server == "cyrus":
+                assert "ATTACH" not in fetched, (
+                    "cyrus: if this now finds ATTACH, Cyrus may have fixed "
+                    "the rel persistence bug; update this test accordingly."
+                )
+            else:
+                assert "ATTACH" in fetched
+                assert "https://example.com/report.pdf" in fetched
+                assert "application/pdf" in fetched
+        finally:
+            event_client.delete_event(event_id)
+
 
 @_sync_servers
 class TestJMAPFreeBusyIntegration:
@@ -1009,5 +1037,144 @@ class TestAsyncJMAPEventIntegration:
             assert len(intervals) == 1
             assert intervals[0].start == "2026-09-21T10:00:00Z"
             assert intervals[0].end == "2026-09-21T11:00:00Z"
+        finally:
+            await async_client.delete_event(event_id)
+
+
+@_sync_servers
+class TestAttachmentIntegration:
+    """Confirmed live on both servers: uploadUrl/downloadUrl are always
+    present, upload/download round-trip byte-for-byte, and the calendars
+    draft's blobId-on-Link extension isn't persisted by either server
+    (attach_to_event uses href instead, see its docstring). The Cyrus
+    rel: "enclosure" persistence bug (see JMAPAttachment.is_attachment)
+    is exercised directly in test_get_event_attachments_finds_attachment.
+    """
+
+    def test_upload_download_roundtrip(self, event_client):
+        data = b"hello attachment test"
+        blob_id = event_client.upload_attachment(data, "text/plain")
+        assert blob_id
+        downloaded = event_client.download_attachment(blob_id, "text/plain", "test.txt")
+        assert downloaded == data
+
+    def test_download_tolerates_omitted_type_and_name(self, event_client):
+        """Confirmed live: both servers resolve a blob by blobId alone; an
+        omitted type/name only affects the response's own Content-Type/
+        Content-Disposition headers, not whether the download succeeds."""
+        data = b"omitted type and name"
+        blob_id = event_client.upload_attachment(data, "text/plain")
+        assert event_client.download_attachment(blob_id) == data
+
+    def test_download_unknown_blob_id_raises(self, event_client):
+        with pytest.raises(requests.HTTPError):
+            event_client.download_attachment("does-not-exist-" + str(uuid.uuid4()))
+
+    def test_attach_to_event_persists_href(self, event_client, event_calendar_id, server):
+        data = b"png-like binary content for attachment test"
+        event_id = event_client.create_event(
+            event_calendar_id, _minimal_ical("Attachment Test Event")
+        )
+        try:
+            blob_id = event_client.upload_attachment(data, "application/octet-stream")
+            event_client.attach_to_event(event_id, blob_id, "test.bin", "application/octet-stream")
+
+            links = event_client.get_event(event_id).get_data().get("links", {})
+            assert len(links) == 1, f"{server}: expected exactly one link"
+            (link,) = links.values()
+            assert link["title"] == "test.bin"
+            assert link["contentType"] == "application/octet-stream"
+            assert link["href"]
+
+            downloaded = event_client.download_attachment(
+                blob_id, "application/octet-stream", "test.bin"
+            )
+            assert downloaded == data
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_get_event_attachments_finds_attachment(self, event_client, event_calendar_id, server):
+        """Cyrus doesn't reliably persist rel: "enclosure" (see
+        JMAPAttachment.is_attachment), so it finds nothing here even though
+        attach_to_event succeeded; Stalwart finds the attachment."""
+        data = b"attachment content for get_event_attachments test"
+        event_id = event_client.create_event(
+            event_calendar_id, _minimal_ical("Attachment Filter Test Event")
+        )
+        try:
+            blob_id = event_client.upload_attachment(data, "application/octet-stream")
+            event_client.attach_to_event(event_id, blob_id, "test.bin", "application/octet-stream")
+            attachments = event_client.get_event_attachments(event_id)
+            if server == "cyrus":
+                assert attachments == [], (
+                    "cyrus: if this now finds the attachment, Cyrus may have "
+                    "fixed the rel persistence bug; update this test and "
+                    "JMAPAttachment.is_attachment's docstring accordingly."
+                )
+            else:
+                assert len(attachments) == 1, f"{server}: expected exactly one attachment"
+                assert attachments[0].title == "test.bin"
+                assert attachments[0].content_type == "application/octet-stream"
+                assert attachments[0].href
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_get_event_attachments_empty_for_event_with_no_links(
+        self, event_client, event_created_id
+    ):
+        assert event_client.get_event_attachments(event_created_id) == []
+
+
+@_cyrus_skip
+class TestAsyncAttachmentIntegration:
+    @pytest.mark.asyncio
+    async def test_upload_download_roundtrip(self, async_client):
+        data = b"hello async attachment test"
+        blob_id = await async_client.upload_attachment(data, "text/plain")
+        assert blob_id
+        downloaded = await async_client.download_attachment(blob_id, "text/plain", "test.txt")
+        assert downloaded == data
+
+    @pytest.mark.asyncio
+    async def test_attach_to_event_persists_href(self, async_client, async_calendar_id):
+        """Cyrus-only class; asserts on the raw links data rather than
+        get_event_attachments, see test_get_event_attachments_empty_on_cyrus_due_to_rel_bug."""
+        data = b"async binary content for attachment test"
+        event_id = await async_client.create_event(
+            async_calendar_id, _minimal_ical("Async Attachment Test Event")
+        )
+        try:
+            blob_id = await async_client.upload_attachment(data, "application/octet-stream")
+            await async_client.attach_to_event(
+                event_id, blob_id, "test.bin", "application/octet-stream"
+            )
+
+            links = (await async_client.get_event(event_id)).get_data().get("links", {})
+            assert len(links) == 1
+            (link,) = links.values()
+            assert link["href"]
+            assert link["title"] == "test.bin"
+
+            downloaded = await async_client.download_attachment(
+                blob_id, "application/octet-stream", "test.bin"
+            )
+            assert downloaded == data
+        finally:
+            await async_client.delete_event(event_id)
+
+    @pytest.mark.asyncio
+    async def test_get_event_attachments_empty_on_cyrus_due_to_rel_bug(
+        self, async_client, async_calendar_id
+    ):
+        """See TestAttachmentIntegration.test_get_event_attachments_finds_attachment."""
+        event_id = await async_client.create_event(
+            async_calendar_id, _minimal_ical("Async Attachment Filter Test Event")
+        )
+        try:
+            blob_id = await async_client.upload_attachment(b"data", "application/octet-stream")
+            await async_client.attach_to_event(
+                event_id, blob_id, "test.bin", "application/octet-stream"
+            )
+            assert await async_client.get_event_attachments(event_id) == []
         finally:
             await async_client.delete_event(event_id)

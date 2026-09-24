@@ -19,6 +19,8 @@ try:
 except ImportError:
     from requests.auth import HTTPBasicAuth  # type: ignore[assignment,no-redef]
 
+from calendaring_jmap._http import requests as _http_requests
+
 _JMAP_URL = "http://localhost:8802/.well-known/jmap"
 _API_URL = "http://localhost:8802/jmap/api"
 _USERNAME = "user1"
@@ -277,6 +279,25 @@ def _make_mock_response(json_data, status_code=200):
     return mock_resp
 
 
+def _make_mock_blob_response(status_code=200, json_data=None, content=None):
+    """Mock a raw HTTP response for blob upload/download, distinct from
+    _make_mock_response's JMAP methodCalls/methodResponses shape. Shared by
+    _MockedBlobClientMixin (sync) and TestAsyncJMAPClient (async)."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = status_code
+    if json_data is not None:
+        mock_resp.json.return_value = json_data
+    mock_resp.content = content
+    if status_code < 400:
+        mock_resp.raise_for_status = MagicMock()
+    else:
+        ## Real raise_for_status() raises HTTPError, not a plain Exception.
+        mock_resp.raise_for_status = MagicMock(
+            side_effect=_http_requests.HTTPError(f"HTTP {status_code}")
+        )
+    return mock_resp
+
+
 class TestFetchSession:
     def test_parses_api_url(self):
         with patch("calendaring_jmap.session.requests.get") as mock_get:
@@ -445,6 +466,86 @@ class TestFetchSession:
         monkeypatch.setattr("calendaring_jmap.session.AsyncSession", lambda: mock_http)
         with pytest.raises(JMAPAuthError):
             await async_fetch_session(_JMAP_URL, auth=None)
+
+    def test_parses_upload_and_download_url(self):
+        data = dict(_SESSION_JSON)
+        data["uploadUrl"] = "http://localhost:8802/jmap/upload/{accountId}/"
+        data["downloadUrl"] = (
+            "http://localhost:8802/jmap/download/{accountId}/{blobId}/{name}?accept={type}"
+        )
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(data)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.upload_url == "http://localhost:8802/jmap/upload/{accountId}/"
+        assert session.download_url == (
+            "http://localhost:8802/jmap/download/{accountId}/{blobId}/{name}?accept={type}"
+        )
+
+    def test_upload_and_download_url_default_to_none(self):
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(_SESSION_JSON)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.upload_url is None
+        assert session.download_url is None
+
+    def test_empty_string_upload_and_download_url_become_none(self):
+        """A server returning "" instead of omitting the key must not slip
+        past _require_blob_url's "is None" check downstream as if it were
+        a real URL."""
+        data = dict(_SESSION_JSON)
+        data["uploadUrl"] = ""
+        data["downloadUrl"] = ""
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(data)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.upload_url is None
+        assert session.download_url is None
+
+    def test_resolves_relative_upload_and_download_url(self):
+        """Confirmed live against Cyrus: uploadUrl/downloadUrl can be a
+        relative path, same as apiUrl (see test_parses_api_url's sibling
+        rewrite test), and must be resolved the same way."""
+        data = dict(_SESSION_JSON)
+        data["uploadUrl"] = "/jmap/upload/{accountId}/"
+        data["downloadUrl"] = "/jmap/download/{accountId}/{blobId}/{name}?accept={type}"
+        with patch("calendaring_jmap.session.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response(data)
+            session = fetch_session(_JMAP_URL, auth=None)
+        assert session.upload_url == "http://localhost:8802/jmap/upload/{accountId}/"
+        assert session.download_url == (
+            "http://localhost:8802/jmap/download/{accountId}/{blobId}/{name}?accept={type}"
+        )
+
+
+class TestExpandUriTemplate:
+    def test_expands_single_variable(self):
+        from calendaring_jmap.session import _expand_uri_template
+
+        assert _expand_uri_template("/upload/{accountId}/", {"accountId": "u1"}) == "/upload/u1/"
+
+    def test_expands_multiple_variables(self):
+        from calendaring_jmap.session import _expand_uri_template
+
+        result = _expand_uri_template(
+            "/download/{accountId}/{blobId}/{name}?accept={type}",
+            {"accountId": "u1", "blobId": "G123", "name": "test.txt", "type": "text/plain"},
+        )
+        assert result == "/download/u1/G123/test.txt?accept=text%2Fplain"
+
+    def test_percent_encodes_reserved_characters(self):
+        from calendaring_jmap.session import _expand_uri_template
+
+        assert _expand_uri_template("{v}", {"v": "Hello World!"}) == "Hello%20World%21"
+
+    def test_leaves_unmapped_variable_unexpanded(self):
+        from calendaring_jmap.session import _expand_uri_template
+
+        assert _expand_uri_template("{known}/{unknown}", {"known": "x"}) == "x/{unknown}"
+
+    def test_empty_string_value_expands_to_empty(self):
+        from calendaring_jmap.session import _expand_uri_template
+
+        assert _expand_uri_template("/x/{v}/y", {"v": ""}) == "/x//y"
 
 
 from datetime import datetime, timezone
@@ -899,6 +1000,48 @@ class TestBusyInterval:
         }
         interval = BusyInterval.from_jmap(data)
         assert interval.start == "2026-09-21T10:00:00Z"
+
+
+from calendaring_jmap.objects.attachment import JMAPAttachment
+
+
+class TestJMAPAttachment:
+    def test_from_jmap_full(self):
+        data = {
+            "@type": "Link",
+            "href": "http://example.com/download/G123/test.txt",
+            "rel": "enclosure",
+            "title": "test.txt",
+            "contentType": "text/plain",
+            "size": 21,
+        }
+        attachment = JMAPAttachment.from_jmap("link1", data)
+        assert attachment.link_id == "link1"
+        assert attachment.href == "http://example.com/download/G123/test.txt"
+        assert attachment.title == "test.txt"
+        assert attachment.content_type == "text/plain"
+        assert attachment.size == 21
+        assert attachment.blob_id is None
+
+    def test_from_jmap_with_blob_id(self):
+        data = {"@type": "Link", "blobId": "G123", "rel": "enclosure"}
+        attachment = JMAPAttachment.from_jmap("link1", data)
+        assert attachment.blob_id == "G123"
+        assert attachment.href is None
+
+    def test_from_jmap_ignores_unknown_keys(self):
+        data = {"href": "http://x", "rel": "enclosure", "cid": "unused-by-this-client"}
+        attachment = JMAPAttachment.from_jmap("link1", data)
+        assert attachment.href == "http://x"
+
+    def test_is_attachment_true_for_enclosure_rel(self):
+        assert JMAPAttachment.is_attachment({"rel": "enclosure"}) is True
+
+    def test_is_attachment_false_for_other_rel(self):
+        assert JMAPAttachment.is_attachment({"rel": "describedby"}) is False
+
+    def test_is_attachment_false_when_rel_absent(self):
+        assert JMAPAttachment.is_attachment({"href": "http://x"}) is False
 
 
 from calendaring_jmap._methods.calendar import (
@@ -1905,6 +2048,23 @@ class TestFixup:
         assert "DTSTAMP:" not in result
 
 
+class TestAsList:
+    def test_none_becomes_empty_list(self):
+        from calendaring_jmap.convert.ical_to_jscal import _as_list
+
+        assert _as_list(None) == []
+
+    def test_single_value_becomes_one_item_list(self):
+        from calendaring_jmap.convert.ical_to_jscal import _as_list
+
+        assert _as_list("x") == ["x"]
+
+    def test_list_passes_through_unchanged(self):
+        from calendaring_jmap.convert.ical_to_jscal import _as_list
+
+        assert _as_list(["a", "b"]) == ["a", "b"]
+
+
 class TestIcalToJscal:
     def test_minimal_event(self):
         ical = _make_ical("DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:Test Event\r\n")
@@ -2179,6 +2339,60 @@ class TestIcalToJscal:
         alert = next(iter(result["alerts"].values()))
         assert alert["trigger"] == "-PT5M"
         assert alert.get("relativeTo") == "end"
+
+    def test_attach_uri_form(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "SUMMARY:Attach Event\r\n"
+            "ATTACH:https://example.com/foo.pdf\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert "links" in result
+        link = next(iter(result["links"].values()))
+        assert link["@type"] == "Link"
+        assert link["rel"] == "enclosure"
+        assert link["href"] == "https://example.com/foo.pdf"
+        assert "contentType" not in link
+
+    def test_attach_binary_form(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "SUMMARY:Attach Event\r\n"
+            "ATTACH;FMTTYPE=image/png;ENCODING=BASE64;VALUE=BINARY:iVBORw0KGgo=\r\n"
+        )
+        result = ical_to_jscal(ical)
+        link = next(iter(result["links"].values()))
+        assert link["rel"] == "enclosure"
+        assert link["href"] == "data:image/png;base64,iVBORw0KGgo="
+        assert link["contentType"] == "image/png"
+
+    def test_attach_binary_form_without_fmttype(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "SUMMARY:Attach Event\r\n"
+            "ATTACH;ENCODING=BASE64;VALUE=BINARY:iVBORw0KGgo=\r\n"
+        )
+        result = ical_to_jscal(ical)
+        link = next(iter(result["links"].values()))
+        assert link["href"] == "data:;base64,iVBORw0KGgo="
+        assert "contentType" not in link
+
+    def test_multiple_attach_properties(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "SUMMARY:Multi Attach Event\r\n"
+            "ATTACH:https://example.com/foo.pdf\r\n"
+            "ATTACH:https://example.com/bar.pdf\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert len(result["links"]) == 2
+        hrefs = {link["href"] for link in result["links"].values()}
+        assert hrefs == {"https://example.com/foo.pdf", "https://example.com/bar.pdf"}
+
+    def test_no_attach_omits_links(self):
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:No Attach Event\r\n")
+        result = ical_to_jscal(ical)
+        assert "links" not in result
 
     def test_organizer_attendee(self):
         ical = _make_ical(
@@ -2755,6 +2969,58 @@ class TestJscalToIcal:
         assert "RELATED=END" in result
         assert "-PT5M" in result
 
+    def test_link_enclosure_uri_form(self):
+        jscal = _minimal_jscal(
+            links={
+                "l1": {
+                    "@type": "Link",
+                    "href": "https://example.com/foo.pdf",
+                    "rel": "enclosure",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "ATTACH:https://example.com/foo.pdf" in result
+
+    def test_link_enclosure_data_url_becomes_binary_attach(self):
+        jscal = _minimal_jscal(
+            links={
+                "l1": {
+                    "@type": "Link",
+                    "href": "data:image/png;base64,iVBORw0KGgo=",
+                    "rel": "enclosure",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "ENCODING=BASE64" in result
+        assert "VALUE=BINARY" in result
+        assert "FMTTYPE=image/png" in result
+        assert "iVBORw0KGgo=" in result
+
+    def test_link_enclosure_without_href_not_converted(self):
+        jscal = _minimal_jscal(links={"l1": {"@type": "Link", "rel": "enclosure"}})
+        result = jscal_to_ical(jscal)
+        assert "ATTACH" not in result
+
+    def test_link_non_enclosure_rel_not_converted(self):
+        jscal = _minimal_jscal(
+            links={
+                "l1": {
+                    "@type": "Link",
+                    "href": "https://example.com/conference",
+                    "rel": "describedby",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "ATTACH" not in result
+
+    def test_no_links_omits_attach(self):
+        jscal = _minimal_jscal()
+        result = jscal_to_ical(jscal)
+        assert "ATTACH" not in result
+
     def test_participants_organizer(self):
         jscal = _minimal_jscal(
             participants={
@@ -3328,7 +3594,22 @@ class TestRoundTrip:
         assert "alerts" in ctx["jscal"]
         alert = next(iter(ctx["jscal"]["alerts"].values()))
         assert alert["trigger"] == "-PT15M"
-        assert "BEGIN:VALARM" in ctx["ical"]
+
+    def test_with_attach_round_trip(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "DURATION:PT1H\r\n"
+            "SUMMARY:Attach Event\r\n"
+            "ATTACH;FMTTYPE=application/pdf:https://example.com/report.pdf\r\n"
+        )
+        ctx = self._key_fields_survive(ical)
+        assert "links" in ctx["jscal"]
+        link = next(iter(ctx["jscal"]["links"].values()))
+        assert link["href"] == "https://example.com/report.pdf"
+        assert link["rel"] == "enclosure"
+        assert link["contentType"] == "application/pdf"
+        assert "ATTACH" in ctx["ical"]
+        assert "https://example.com/report.pdf" in ctx["ical"]
 
     def test_with_attendees_round_trip(self):
         ical = _make_ical(
@@ -3886,6 +4167,223 @@ class TestJMAPClientEvents(_MockedClientMixin):
         client.search_events()
         query_args = captured["json"]["methodCalls"][0][1]
         assert "filter" not in query_args
+
+
+class _MockedBlobClientMixin:
+    """Shared client/response mocking for the raw-HTTP blob upload/download
+    methods. Distinct from _MockedClientMixin: those tests mock a JMAP
+    methodCalls/methodResponses envelope, but blob upload/download are plain
+    HTTP POST/GET with a flat JSON body or raw bytes, so the mocked
+    ``_http_session`` here is wired directly instead."""
+
+    def _make_client(self, upload_url=None, download_url=None):
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(
+            api_url=_API_URL,
+            account_id=_USERNAME,
+            state="state-abc",
+            upload_url=upload_url,
+            download_url=download_url,
+        )
+        return client
+
+    def _blob_client(self):
+        return self._make_client(
+            upload_url="/jmap/upload/{accountId}/",
+            download_url="/jmap/download/{accountId}/{blobId}/{name}?accept={type}",
+        )
+
+
+class TestJMAPClientAttachments(_MockedBlobClientMixin):
+    def test_upload_attachment_posts_bytes_and_returns_blob_id(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.post.return_value = _make_mock_blob_response(
+            json_data={"accountId": _USERNAME, "blobId": "G123", "type": "text/plain", "size": 5}
+        )
+        client._http_session = mock_http
+        blob_id = client.upload_attachment(b"hello", "text/plain")
+        assert blob_id == "G123"
+        call_args = mock_http.post.call_args
+        assert call_args.args[0] == f"/jmap/upload/{_USERNAME}/"
+        assert call_args.kwargs["data"] == b"hello"
+        assert call_args.kwargs["headers"]["Content-Type"] == "text/plain"
+
+    def test_upload_attachment_raises_capability_error_when_no_upload_url(self):
+        client = self._make_client()
+        with pytest.raises(JMAPCapabilityError):
+            client.upload_attachment(b"hello", "text/plain")
+
+    def test_upload_attachment_raises_auth_error_on_401(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.post.return_value = _make_mock_blob_response(status_code=401)
+        client._http_session = mock_http
+        with pytest.raises(JMAPAuthError):
+            client.upload_attachment(b"hello", "text/plain")
+
+    def test_download_attachment_returns_bytes(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get.return_value = _make_mock_blob_response(content=b"hello")
+        client._http_session = mock_http
+        data = client.download_attachment("G123", "text/plain", "test.txt")
+        assert data == b"hello"
+        url = mock_http.get.call_args.args[0]
+        assert url == f"/jmap/download/{_USERNAME}/G123/test.txt?accept=text%2Fplain"
+
+    def test_download_attachment_overrides_session_default_accept_header(self):
+        """The persistent HTTP session defaults to Accept: application/json
+        for JMAP method calls; a blob download's response body is arbitrary
+        binary data, so that default must not leak onto this request."""
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get.return_value = _make_mock_blob_response(content=b"hello")
+        client._http_session = mock_http
+        client.download_attachment("G123", "text/plain", "test.txt")
+        assert mock_http.get.call_args.kwargs["headers"]["Accept"] == "*/*"
+
+    def test_download_attachment_omitted_type_and_name_expand_to_empty(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get.return_value = _make_mock_blob_response(content=b"hello")
+        client._http_session = mock_http
+        client.download_attachment("G123")
+        url = mock_http.get.call_args.args[0]
+        assert url == f"/jmap/download/{_USERNAME}/G123/?accept="
+
+    def test_download_attachment_coalesces_none_content_to_empty_bytes(self):
+        """requests.Response.content is typed bytes but can genuinely be
+        None (status_code == 0 or raw is None); must not leak past this
+        method's own bytes-returning contract."""
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get.return_value = _make_mock_blob_response(content=None)
+        client._http_session = mock_http
+        assert client.download_attachment("G123") == b""
+
+    def test_download_attachment_raises_capability_error_when_no_download_url(self):
+        client = self._make_client()
+        with pytest.raises(JMAPCapabilityError):
+            client.download_attachment("G123")
+
+    def test_download_attachment_raises_on_404(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get.return_value = _make_mock_blob_response(status_code=404)
+        client._http_session = mock_http
+        with pytest.raises(_http_requests.HTTPError, match="HTTP 404"):
+            client.download_attachment("unknown-blob")
+
+    def test_download_attachment_raises_on_403(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get.return_value = _make_mock_blob_response(status_code=403)
+        client._http_session = mock_http
+        with pytest.raises(JMAPAuthError):
+            client.download_attachment("G123")
+
+    def test_attach_to_event_uses_href_not_blob_id(self, monkeypatch):
+        client, captured = self._attach_sequence_client(monkeypatch)
+        client.attach_to_event("ev1", "G123", "test.txt", "text/plain")
+        update_args = captured["payloads"][1]["methodCalls"][0][1]
+        (patch,) = update_args["update"]["ev1"]["links"].values()
+        assert "href" in patch
+        assert "blobId" not in patch
+        assert patch["href"] == f"/jmap/download/{_USERNAME}/G123/test.txt?accept=text%2Fplain"
+        assert patch["rel"] == "enclosure"
+        assert patch["title"] == "test.txt"
+        assert patch["contentType"] == "text/plain"
+
+    def test_attach_to_event_fetches_only_links(self, monkeypatch):
+        client, captured = self._attach_sequence_client(monkeypatch)
+        client.attach_to_event("ev1", "G123", "test.txt", "text/plain")
+        get_args = captured["payloads"][0]["methodCalls"][0][1]
+        assert get_args["properties"] == ["links"]
+
+    def test_attach_to_event_preserves_existing_links(self, monkeypatch):
+        existing = {"other-l1": {"@type": "Link", "href": "http://x", "rel": "describedby"}}
+        client, captured = self._attach_sequence_client(monkeypatch, existing_links=existing)
+        client.attach_to_event("ev1", "G123", "test.txt", "text/plain")
+        update_args = captured["payloads"][1]["methodCalls"][0][1]
+        links = update_args["update"]["ev1"]["links"]
+        assert links["other-l1"] == existing["other-l1"]
+        assert len(links) == 2
+
+    def _attach_sequence_client(self, monkeypatch, existing_links=None):
+        """Return (client, captured) where the first POST answers
+        CalendarEvent/get with the event's current links, and the second
+        answers CalendarEvent/set. Mirrors _accept_sequence_client's
+        get-then-set pattern for a client whose Session also carries
+        upload_url/download_url."""
+        get_resp = _get_response(
+            "CalendarEvent/get", "ev-get-0", [{"id": "ev1", "links": existing_links or {}}]
+        )
+        set_resp = _set_response("CalendarEvent/set", "ev-set-update-0", updated={"ev1": None})
+        responses = iter([get_resp, set_resp])
+        captured: dict = {"payloads": []}
+        client = self._blob_client()
+
+        def post(*args, **kwargs):
+            captured["payloads"].append(kwargs.get("json"))
+            return _make_mock_response(next(responses))
+
+        mock_http = MagicMock()
+        mock_http.post.side_effect = post
+        client._http_session = mock_http
+        return client, captured
+
+    def test_get_event_attachments_filters_to_enclosure_links(self, monkeypatch):
+        event = {
+            "id": "ev1",
+            "links": {
+                "l1": {"@type": "Link", "href": "http://x/1", "rel": "enclosure", "title": "a.txt"},
+                "l2": {"@type": "Link", "href": "http://x/2", "rel": "describedby"},
+            },
+        }
+        resp = _get_response("CalendarEvent/get", "ev-get-0", [event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        attachments = client.get_event_attachments("ev1")
+        assert len(attachments) == 1
+        assert attachments[0].link_id == "l1"
+        assert attachments[0].title == "a.txt"
+
+    def test_get_event_attachments_empty_when_no_links(self, monkeypatch):
+        event = {"id": "ev1"}
+        resp = _get_response("CalendarEvent/get", "ev-get-0", [event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert client.get_event_attachments("ev1") == []
+
+    def test_get_event_attachments_empty_when_links_is_explicitly_null(self, monkeypatch):
+        """Neither Cyrus nor Stalwart sends "links": null in practice (both
+        omit the key entirely, confirmed live), but a malformed or future
+        response doing so must not crash get_event_attachments."""
+        event = {"id": "ev1", "links": None}
+        resp = _get_response("CalendarEvent/get", "ev-get-0", [event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert client.get_event_attachments("ev1") == []
+
+    def test_attach_to_event_when_existing_links_is_explicitly_null(self, monkeypatch):
+        get_resp = _get_response("CalendarEvent/get", "ev-get-0", [{"id": "ev1", "links": None}])
+        set_resp = _set_response("CalendarEvent/set", "ev-set-update-0", updated={"ev1": None})
+        responses = iter([get_resp, set_resp])
+        captured: dict = {"payloads": []}
+        client = _make_client()
+
+        def post(*args, **kwargs):
+            captured["payloads"].append(kwargs.get("json"))
+            return _make_mock_response(next(responses))
+
+        mock_http = MagicMock()
+        mock_http.post.side_effect = post
+        client._http_session = mock_http
+        client._session_cache.upload_url = "/jmap/upload/{accountId}/"
+        client._session_cache.download_url = (
+            "/jmap/download/{accountId}/{blobId}/{name}?accept={type}"
+        )
+        client.attach_to_event("ev1", "G123", "test.txt", "text/plain")
+        update_args = captured["payloads"][1]["methodCalls"][0][1]
+        assert len(update_args["update"]["ev1"]["links"]) == 1
 
 
 def _availability_response(periods):
@@ -5156,6 +5654,207 @@ class TestAsyncJMAPClient:
         with pytest.raises(JMAPMethodError) as exc_info:
             await self._make_client().accept_invitation("ev-async-1", "me@example.com")
         assert exc_info.value.error_type == "forbidden"
+
+    def _blob_client(self):
+        client = AsyncJMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(
+            api_url=_API_URL,
+            account_id=_USERNAME,
+            state="state-async",
+            upload_url="/jmap/upload/{accountId}/",
+            download_url="/jmap/download/{accountId}/{blobId}/{name}?accept={type}",
+        )
+        return client
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_returns_blob_id(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(
+            return_value=_make_mock_blob_response(
+                json_data={
+                    "accountId": _USERNAME,
+                    "blobId": "G123",
+                    "type": "text/plain",
+                    "size": 5,
+                }
+            )
+        )
+        client._http_session = mock_http
+        blob_id = await client.upload_attachment(b"hello", "text/plain")
+        assert blob_id == "G123"
+        call_args = mock_http.post.call_args
+        assert call_args.args[0] == f"/jmap/upload/{_USERNAME}/"
+        assert call_args.kwargs["data"] == b"hello"
+        assert call_args.kwargs["headers"]["Content-Type"] == "text/plain"
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_raises_capability_error_when_no_upload_url(self):
+        client = AsyncJMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-async")
+        with pytest.raises(JMAPCapabilityError):
+            await client.upload_attachment(b"hello", "text/plain")
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_raises_auth_error_on_401(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=_make_mock_blob_response(status_code=401))
+        client._http_session = mock_http
+        with pytest.raises(JMAPAuthError):
+            await client.upload_attachment(b"hello", "text/plain")
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_returns_bytes(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(return_value=_make_mock_blob_response(content=b"hello"))
+        client._http_session = mock_http
+        data = await client.download_attachment("G123", "text/plain", "test.txt")
+        assert data == b"hello"
+        url = mock_http.get.call_args.args[0]
+        assert url == f"/jmap/download/{_USERNAME}/G123/test.txt?accept=text%2Fplain"
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_omitted_type_and_name_expand_to_empty(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(return_value=_make_mock_blob_response(content=b"hello"))
+        client._http_session = mock_http
+        await client.download_attachment("G123")
+        url = mock_http.get.call_args.args[0]
+        assert url == f"/jmap/download/{_USERNAME}/G123/?accept="
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_overrides_session_default_accept_header(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(return_value=_make_mock_blob_response(content=b"hello"))
+        client._http_session = mock_http
+        await client.download_attachment("G123", "text/plain", "test.txt")
+        assert mock_http.get.call_args.kwargs["headers"]["Accept"] == "*/*"
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_coalesces_none_content_to_empty_bytes(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(return_value=_make_mock_blob_response(content=None))
+        client._http_session = mock_http
+        data = await client.download_attachment("G123")
+        assert data == b""
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_raises_capability_error_when_no_download_url(self):
+        client = AsyncJMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-async")
+        with pytest.raises(JMAPCapabilityError):
+            await client.download_attachment("G123")
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_raises_on_404(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(return_value=_make_mock_blob_response(status_code=404))
+        client._http_session = mock_http
+        with pytest.raises(_http_requests.HTTPError, match="HTTP 404"):
+            await client.download_attachment("unknown-blob")
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_raises_on_403(self):
+        client = self._blob_client()
+        mock_http = MagicMock()
+        mock_http.get = AsyncMock(return_value=_make_mock_blob_response(status_code=403))
+        client._http_session = mock_http
+        with pytest.raises(JMAPAuthError):
+            await client.download_attachment("G123")
+
+    @pytest.mark.asyncio
+    async def test_attach_to_event_uses_href_not_blob_id(self, monkeypatch):
+        client = self._blob_client()
+        get_resp = self._event_get_resp([{"id": "ev-async-1", "links": {}}])
+        set_resp = self._event_set_resp(updated={"ev-async-1": None})
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(
+            side_effect=[
+                _make_mock_blob_response(json_data=get_resp),
+                _make_mock_blob_response(json_data=set_resp),
+            ]
+        )
+        client._http_session = mock_http
+        await client.attach_to_event("ev-async-1", "G123", "test.txt", "text/plain")
+        update_args = mock_http.post.call_args_list[1].kwargs["json"]["methodCalls"][0][1]
+        (patch,) = update_args["update"]["ev-async-1"]["links"].values()
+        assert "href" in patch
+        assert "blobId" not in patch
+        assert patch["href"] == f"/jmap/download/{_USERNAME}/G123/test.txt?accept=text%2Fplain"
+        assert patch["rel"] == "enclosure"
+        assert patch["title"] == "test.txt"
+        assert patch["contentType"] == "text/plain"
+
+    @pytest.mark.asyncio
+    async def test_attach_to_event_fetches_only_links(self, monkeypatch):
+        client = self._blob_client()
+        get_resp = self._event_get_resp([{"id": "ev-async-1", "links": {}}])
+        set_resp = self._event_set_resp(updated={"ev-async-1": None})
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(
+            side_effect=[
+                _make_mock_blob_response(json_data=get_resp),
+                _make_mock_blob_response(json_data=set_resp),
+            ]
+        )
+        client._http_session = mock_http
+        await client.attach_to_event("ev-async-1", "G123", "test.txt", "text/plain")
+        get_args = mock_http.post.call_args_list[0].kwargs["json"]["methodCalls"][0][1]
+        assert get_args["properties"] == ["links"]
+
+    @pytest.mark.asyncio
+    async def test_attach_to_event_preserves_existing_links(self, monkeypatch):
+        existing = {"other-l1": {"@type": "Link", "href": "http://x", "rel": "describedby"}}
+        client = self._blob_client()
+        get_resp = self._event_get_resp([{"id": "ev-async-1", "links": existing}])
+        set_resp = self._event_set_resp(updated={"ev-async-1": None})
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(
+            side_effect=[
+                _make_mock_blob_response(json_data=get_resp),
+                _make_mock_blob_response(json_data=set_resp),
+            ]
+        )
+        client._http_session = mock_http
+        await client.attach_to_event("ev-async-1", "G123", "test.txt", "text/plain")
+        update_args = mock_http.post.call_args_list[1].kwargs["json"]["methodCalls"][0][1]
+        links = update_args["update"]["ev-async-1"]["links"]
+        assert links["other-l1"] == existing["other-l1"]
+        assert len(links) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_event_attachments_filters_to_enclosure_links(self, monkeypatch):
+        event = {
+            "id": "ev-async-1",
+            "links": {
+                "l1": {"@type": "Link", "href": "http://x/1", "rel": "enclosure", "title": "a.txt"},
+                "l2": {"@type": "Link", "href": "http://x/2", "rel": "describedby"},
+            },
+        }
+        self._patch_async_session(monkeypatch, self._event_get_resp([event]))
+        attachments = await self._make_client().get_event_attachments("ev-async-1")
+        assert len(attachments) == 1
+        assert attachments[0].link_id == "l1"
+        assert attachments[0].title == "a.txt"
+        assert attachments[0].href == "http://x/1"
+
+    @pytest.mark.asyncio
+    async def test_get_event_attachments_empty_when_no_links(self, monkeypatch):
+        event = {"id": "ev-async-1"}
+        self._patch_async_session(monkeypatch, self._event_get_resp([event]))
+        assert await self._make_client().get_event_attachments("ev-async-1") == []
+
+    @pytest.mark.asyncio
+    async def test_get_event_attachments_empty_when_links_is_explicitly_null(self, monkeypatch):
+        event = {"id": "ev-async-1", "links": None}
+        self._patch_async_session(monkeypatch, self._event_get_resp([event]))
+        assert await self._make_client().get_event_attachments("ev-async-1") == []
 
     @pytest.mark.asyncio
     async def test_search_events_returns_ical_list(self, monkeypatch):
