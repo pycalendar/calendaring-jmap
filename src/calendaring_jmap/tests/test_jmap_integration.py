@@ -29,7 +29,9 @@ except ImportError:
 
 from calendaring_jmap import AsyncJMAPClient, JMAPCalendarObject, JMAPClient
 from calendaring_jmap._http import requests
-from calendaring_jmap.constants import CALENDAR_CAPABILITY
+from calendaring_jmap._methods import parse_set_response
+from calendaring_jmap.client import _CONTACTS_USING, _JMAPClientBase
+from calendaring_jmap.constants import CALENDAR_CAPABILITY, CONTACTS_CAPABILITY
 from calendaring_jmap.convert import jscal_to_ical
 from calendaring_jmap.error import JMAPMethodError
 from calendaring_jmap.session import fetch_session
@@ -1178,3 +1180,159 @@ class TestAsyncAttachmentIntegration:
             assert await async_client.get_event_attachments(event_id) == []
         finally:
             await async_client.delete_event(event_id)
+
+
+@pytest.fixture
+def address_book_id(event_client, server):
+    address_books = event_client.get_address_books()
+    assert address_books, f"{server} did not return any address books"
+    return address_books[0].id
+
+
+@_sync_servers
+class TestContactsIntegration:
+    """Confirmed live that both Cyrus and Stalwart advertise
+    urn:ietf:params:jmap:contacts under the same account already used for
+    calendars, so no graceful-fallback path is exercised here; that path is
+    covered only by the mocked unit tests, the same way get_availability's
+    own fallback-path unit test covers a scenario neither live server
+    actually exhibits either.
+
+    ContactCard/set isn't part of this client's public API (get_address_books/
+    search_contacts are read-only), so test contacts are seeded with a raw
+    _request() call, the same JMAP wire call the client itself would send.
+    """
+
+    def _create_contact(self, event_client, address_book_id, card):
+        """Seed a ContactCard via a raw ContactCard/set call. @type and
+        version are RFC 9553 sections 2.1.1/2.1.2 mandatory Card properties;
+        confirmed live that Cyrus rejects a create missing either with
+        invalidProperties, while Stalwart accepts the create either way."""
+        session = event_client._get_session()
+        full_card = {
+            "@type": "Card",
+            "version": "1.0",
+            **card,
+            "addressBookIds": {address_book_id: True},
+        }
+        call = (
+            "ContactCard/set",
+            {"accountId": session.account_id, "create": {"new-0": full_card}},
+            "contact-set-0",
+        )
+        responses = event_client._request([call], using=_CONTACTS_USING)
+        return _JMAPClientBase._parse_create_response(
+            responses, session.api_url, "ContactCard/set", parse_set_response
+        )
+
+    def _destroy_contact(self, event_client, contact_id):
+        session = event_client._get_session()
+        call = (
+            "ContactCard/set",
+            {"accountId": session.account_id, "destroy": [contact_id]},
+            "contact-destroy-0",
+        )
+        responses = event_client._request([call], using=_CONTACTS_USING)
+        _JMAPClientBase._parse_delete_response(
+            responses, session.api_url, "ContactCard/set", parse_set_response, contact_id
+        )
+
+    def test_session_has_contacts_capability(self, event_client):
+        session = event_client._get_session()
+        assert CONTACTS_CAPABILITY in session.account_capabilities
+
+    def test_get_address_books_returns_list(self, event_client, server):
+        address_books = event_client.get_address_books()
+        assert isinstance(address_books, list)
+        assert len(address_books) >= 1, f"{server}: expected at least one address book"
+
+    def test_get_address_books_exactly_one_is_default(self, event_client, server):
+        address_books = event_client.get_address_books()
+        defaults = [ab for ab in address_books if ab.is_default]
+        assert len(defaults) == 1, f"{server}: expected exactly one default address book"
+
+    def test_search_contacts_by_email(self, event_client, address_book_id, server):
+        contact_id = self._create_contact(
+            event_client,
+            address_book_id,
+            {
+                "name": {"full": "Search By Email Test"},
+                "emails": {"e1": {"address": "search-email-test@example.com"}},
+            },
+        )
+        try:
+            results = event_client.search_contacts(email="search-email-test")
+            assert any(c.id == contact_id for c in results), (
+                f"{server}: expected to find the seeded contact by email substring"
+            )
+        finally:
+            self._destroy_contact(event_client, contact_id)
+
+    def test_search_contacts_by_text(self, event_client, address_book_id, server):
+        """Confirmed live: Cyrus matches the text filter as a substring
+        against a card's name, not exact-only. Stalwart v0.16.21 does not
+        match it against the name at all, only against the email address
+        (see search_contacts's own docstring); a text search for any part
+        of the name here finds nothing there."""
+        contact_id = self._create_contact(
+            event_client,
+            address_book_id,
+            {
+                "name": {"full": "Search By Text Test"},
+                "emails": {"e1": {"address": "search-text-test@example.com"}},
+            },
+        )
+        try:
+            results = event_client.search_contacts(text="By Text")
+            found = any(c.id == contact_id for c in results)
+            if server == "cyrus":
+                assert found, (
+                    f"{server}: expected to find the seeded contact by a substring of its name text"
+                )
+            else:
+                assert not found, (
+                    f"{server}: if this now finds the contact, Stalwart may have "
+                    "started matching text against the name; update this test and "
+                    "search_contacts's own docstring accordingly."
+                )
+        finally:
+            self._destroy_contact(event_client, contact_id)
+
+    def test_search_contacts_no_filter_returns_seeded_contact(
+        self, event_client, address_book_id, server
+    ):
+        contact_id = self._create_contact(
+            event_client,
+            address_book_id,
+            {"name": {"full": "Unfiltered Search Test"}},
+        )
+        try:
+            results = event_client.search_contacts()
+            assert any(c.id == contact_id for c in results), (
+                f"{server}: expected the seeded contact in an unfiltered search"
+            )
+        finally:
+            self._destroy_contact(event_client, contact_id)
+
+    def test_contact_uid(self, event_client, address_book_id, server):
+        """Stalwart's ContactCard/get never returns uid at all, contrary to
+        RFC 9553 treating it as mandatory; Cyrus does return it. A future
+        Stalwart fix silently changing this should be caught here."""
+        contact_id = self._create_contact(
+            event_client,
+            address_book_id,
+            {
+                "name": {"full": "Contact Uid Test"},
+                "emails": {"e1": {"address": "contact-uid-test@example.com"}},
+            },
+        )
+        try:
+            # email, not text: see test_search_contacts_by_text.
+            results = event_client.search_contacts(email="contact-uid-test")
+            (contact,) = [c for c in results if c.id == contact_id]
+            if server == "stalwart":
+                assert contact.uid is None
+            else:
+                assert contact.uid is not None
+        finally:
+            self._destroy_contact(event_client, contact_id)

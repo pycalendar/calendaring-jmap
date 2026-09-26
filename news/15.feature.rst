@@ -1,0 +1,1 @@
+Added ``get_address_books`` and ``search_contacts`` on both ``JMAPClient`` and ``AsyncJMAPClient``, for resolving contact information (e.g. participant emails) via JMAP Contacts. ``get_address_books`` returns an empty list with a logged warning, instead of raising, when Contacts isn't supported.

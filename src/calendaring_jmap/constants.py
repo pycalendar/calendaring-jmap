@@ -27,6 +27,11 @@ TASK_CAPABILITY = "urn:ietf:params:jmap:tasks"
 #: capability is the real gate, not that one.
 PRINCIPALS_CAPABILITY = "urn:ietf:params:jmap:principals"
 
+#: JMAP Contacts capability (:rfc:`9610`). Required to use AddressBook/ContactCard
+#: methods. Confirmed live that both Cyrus and Stalwart advertise this capability,
+#: under the same account already used for calendars on both servers.
+CONTACTS_CAPABILITY = "urn:ietf:params:jmap:contacts"
+
 # Participant.participationStatus values (:rfc:`8984#section-4.4.6`).
 # Default is PARTICIPATION_STATUS_NEEDS_ACTION when the property is absent.
 PARTICIPATION_STATUS_NEEDS_ACTION = "needs-action"

@@ -1044,6 +1044,256 @@ class TestJMAPAttachment:
         assert JMAPAttachment.is_attachment({"href": "http://x"}) is False
 
 
+from calendaring_jmap.objects.contact import JMAPAddressBook, JMAPContact
+
+_ADDRESS_BOOK_JSON_FULL = {
+    "id": "ab1",
+    "name": "Personal",
+    "description": "My personal address book",
+    "sortOrder": 1,
+    "isDefault": True,
+    "isSubscribed": True,
+    "shareWith": {"principal1": {"mayRead": True, "mayWrite": False}},
+    "myRights": {"mayRead": True, "mayWrite": True, "mayShare": True, "mayDelete": True},
+}
+
+_ADDRESS_BOOK_JSON_MINIMAL = {
+    "id": "ab2",
+    "name": "Work",
+}
+
+_CONTACT_JSON_FULL = {
+    "id": "c1",
+    "uid": "contact-uid-1",
+    "addressBookIds": {"ab1": True},
+    "kind": "individual",
+    "name": {"full": "Alice Example"},
+    "emails": {
+        "e1": {"address": "alice-work@example.com", "pref": 2},
+        "e2": {"address": "alice@example.com", "pref": 1},
+    },
+}
+
+_CONTACT_JSON_MINIMAL = {
+    "id": "c2",
+}
+
+
+class TestJMAPAddressBook:
+    def test_from_jmap_full(self):
+        ab = JMAPAddressBook.from_jmap(_ADDRESS_BOOK_JSON_FULL)
+        assert ab.id == "ab1"
+        assert ab.name == "Personal"
+        assert ab.description == "My personal address book"
+        assert ab.sort_order == 1
+        assert ab.is_default is True
+        assert ab.is_subscribed is True
+        assert ab.share_with == {"principal1": {"mayRead": True, "mayWrite": False}}
+        assert ab.my_rights == {
+            "mayRead": True,
+            "mayWrite": True,
+            "mayShare": True,
+            "mayDelete": True,
+        }
+
+    def test_from_jmap_minimal_uses_defaults(self):
+        ab = JMAPAddressBook.from_jmap(_ADDRESS_BOOK_JSON_MINIMAL)
+        assert ab.id == "ab2"
+        assert ab.name == "Work"
+        assert ab.description is None
+        assert ab.sort_order == 0
+        assert ab.is_default is False
+        assert ab.is_subscribed is True
+        assert ab.share_with is None
+        assert ab.my_rights == {}
+
+    def test_from_jmap_raises_when_id_missing(self):
+        with pytest.raises(KeyError):
+            JMAPAddressBook.from_jmap({"name": "No Id"})
+
+    def test_from_jmap_raises_when_name_missing(self):
+        with pytest.raises(KeyError):
+            JMAPAddressBook.from_jmap({"id": "ab3"})
+
+    def test_from_jmap_share_with_empty_dict_stays_empty_dict(self):
+        # Confirmed live that Stalwart returns {} for an unshared address
+        # book, not null; this must not collapse to None.
+        ab = JMAPAddressBook.from_jmap({"id": "ab4", "name": "Unshared", "shareWith": {}})
+        assert ab.share_with == {}
+
+
+class TestJMAPContact:
+    def test_from_jmap_full(self):
+        contact = JMAPContact.from_jmap(_CONTACT_JSON_FULL)
+        assert contact.id == "c1"
+        assert contact.uid == "contact-uid-1"
+        assert contact.address_book_ids == {"ab1": True}
+        assert contact.kind == "individual"
+        assert contact.name == {"full": "Alice Example"}
+        assert contact.emails == {
+            "e1": {"address": "alice-work@example.com", "pref": 2},
+            "e2": {"address": "alice@example.com", "pref": 1},
+        }
+
+    def test_from_jmap_minimal_uses_defaults(self):
+        contact = JMAPContact.from_jmap(_CONTACT_JSON_MINIMAL)
+        assert contact.id == "c2"
+        # Confirmed live that Stalwart's ContactCard/get never returns uid
+        # at all, even when explicitly requested via properties, contrary
+        # to RFC 9553 treating it as mandatory; unlike id, a missing uid
+        # must not raise, or every Stalwart contact would break.
+        assert contact.uid is None
+        assert contact.address_book_ids == {}
+        assert contact.kind == "individual"
+        assert contact.name is None
+        assert contact.emails is None
+
+    def test_from_jmap_raises_when_id_missing(self):
+        with pytest.raises(KeyError):
+            JMAPContact.from_jmap({"uid": "no-id"})
+
+    def test_display_name_prefers_full(self):
+        contact = JMAPContact.from_jmap(_CONTACT_JSON_FULL)
+        assert contact.display_name() == "Alice Example"
+
+    def test_display_name_falls_back_to_components(self):
+        contact = JMAPContact(
+            id="c4",
+            name={
+                "components": [
+                    {"kind": "given", "value": "Bob"},
+                    {"kind": "surname", "value": "Builder"},
+                ],
+                "isOrdered": True,
+            },
+        )
+        assert contact.display_name() == "Bob Builder"
+
+    def test_display_name_falls_back_to_components_when_full_is_empty_string(self):
+        contact = JMAPContact(
+            id="c4b",
+            name={
+                "full": "",
+                "components": [
+                    {"kind": "given", "value": "Bob"},
+                    {"kind": "surname", "value": "Builder"},
+                ],
+                "isOrdered": True,
+            },
+        )
+        assert contact.display_name() == "Bob Builder"
+
+    def test_display_name_uses_separator_component_value(self):
+        # RFC 9553 section 2.2.1.1: a separator component's own value gives
+        # guidance on what to insert between the surrounding components; a
+        # hyphenated name must stay hyphenated, not collapse to a space.
+        contact = JMAPContact(
+            id="c5",
+            name={
+                "components": [
+                    {"kind": "given", "value": "Jean"},
+                    {"kind": "separator", "value": "-"},
+                    {"kind": "surname", "value": "Paul"},
+                ],
+                "isOrdered": True,
+            },
+        )
+        assert contact.display_name() == "Jean-Paul"
+
+    def test_display_name_empty_string_separator_joins_with_nothing(self):
+        # RFC 9553 section 2.2.1.1 explicitly allows an empty separator
+        # value; it must be distinguished from "no separator at this
+        # position" (which falls back to defaultSeparator/space), not
+        # collapsed to it by a truthiness check.
+        contact = JMAPContact(
+            id="c5e",
+            name={
+                "components": [
+                    {"kind": "given", "value": "Jean"},
+                    {"kind": "separator", "value": ""},
+                    {"kind": "surname", "value": "Paul"},
+                ],
+                "isOrdered": True,
+            },
+        )
+        assert contact.display_name() == "JeanPaul"
+
+    def test_display_name_uses_default_separator_without_explicit_one(self):
+        contact = JMAPContact(
+            id="c5b",
+            name={
+                "components": [
+                    {"kind": "surname", "value": "Pau Shou Chang"},
+                    {"kind": "given", "value": "Robert"},
+                ],
+                "isOrdered": True,
+                "defaultSeparator": ", ",
+            },
+        )
+        assert contact.display_name() == "Pau Shou Chang, Robert"
+
+    def test_display_name_unordered_space_joins_without_separators(self):
+        # RFC 9553 section 2.2.1.1: an unordered Name's components property
+        # MUST NOT contain a "separator" component at all.
+        contact = JMAPContact(
+            id="c5d",
+            name={
+                "components": [
+                    {"kind": "given", "value": "Bob"},
+                    {"kind": "surname", "value": "Builder"},
+                ],
+                "isOrdered": False,
+            },
+        )
+        assert contact.display_name() == "Bob Builder"
+
+    def test_display_name_none_when_name_absent(self):
+        contact = JMAPContact.from_jmap(_CONTACT_JSON_MINIMAL)
+        assert contact.display_name() is None
+
+    def test_display_name_none_when_neither_full_nor_components(self):
+        contact = JMAPContact(id="c6", name={})
+        assert contact.display_name() is None
+
+    def test_display_name_none_when_name_present_but_empty_full_and_components(self):
+        # A non-empty name dict (unlike the {} case above, which already
+        # short-circuits earlier) with neither full nor components set.
+        contact = JMAPContact(id="c6b", name={"full": None, "components": None})
+        assert contact.display_name() is None
+
+    def test_primary_email_picks_lowest_pref(self):
+        # _CONTACT_JSON_FULL's "e2" entry has pref 1 (most preferred);
+        # "e1" has pref 2.
+        contact = JMAPContact.from_jmap(_CONTACT_JSON_FULL)
+        assert contact.primary_email() == "alice@example.com"
+
+    def test_primary_email_treats_missing_pref_as_least_preferred(self):
+        contact = JMAPContact(
+            id="c7",
+            emails={
+                "e1": {"address": "no-pref@example.com"},
+                "e2": {"address": "preferred@example.com", "pref": 1},
+            },
+        )
+        assert contact.primary_email() == "preferred@example.com"
+
+    def test_primary_email_treats_explicit_null_pref_as_least_preferred(self):
+        # RFC-invalid (pref has no null in its own type), but must not
+        # crash: min()'s key function can't compare None with an int.
+        contact = JMAPContact(
+            id="c7b",
+            emails={
+                "e1": {"address": "null-pref@example.com", "pref": None},
+                "e2": {"address": "preferred@example.com", "pref": 1},
+            },
+        )
+        assert contact.primary_email() == "preferred@example.com"
+
+    def test_primary_email_none_when_no_emails(self):
+        contact = JMAPContact.from_jmap(_CONTACT_JSON_MINIMAL)
+        assert contact.primary_email() is None
+
+
 from calendaring_jmap._methods.calendar import (
     build_calendar_get,
     build_calendar_set_create,
@@ -1130,6 +1380,92 @@ class TestCalendarMethodBuilders:
             {"notDestroyed": {"cal1": {"type": "calendarHasEvent"}}}
         )
         assert not_destroyed == {"cal1": {"type": "calendarHasEvent"}}
+
+
+from calendaring_jmap._methods.contact import (
+    build_address_book_get,
+    build_contact_get_by_query_result,
+    build_contact_query,
+    parse_address_book_get,
+    parse_contact_get,
+)
+
+
+class TestContactMethodBuilders:
+    def test_build_address_book_get_structure(self):
+        method, args, call_id = build_address_book_get("u1")
+        assert method == "AddressBook/get"
+        assert args["accountId"] == "u1"
+        assert args["ids"] is None
+        assert isinstance(call_id, str)
+
+    def test_build_address_book_get_with_ids(self):
+        _, args, _ = build_address_book_get("u1", ids=["ab1", "ab2"])
+        assert args["ids"] == ["ab1", "ab2"]
+
+    def test_build_address_book_get_with_properties(self):
+        _, args, _ = build_address_book_get("u1", properties=["id", "name"])
+        assert args["properties"] == ["id", "name"]
+
+    def test_parse_address_book_get_returns_address_books(self):
+        response_args = {"list": [_ADDRESS_BOOK_JSON_FULL, _ADDRESS_BOOK_JSON_MINIMAL]}
+        books = parse_address_book_get(response_args)
+        assert len(books) == 2
+        assert isinstance(books[0], JMAPAddressBook)
+        assert books[0].id == "ab1"
+        assert books[1].id == "ab2"
+
+    def test_parse_address_book_get_missing_list_key(self):
+        assert parse_address_book_get({}) == []
+
+    def test_build_contact_query_structure(self):
+        method, args, call_id = build_contact_query("u1")
+        assert method == "ContactCard/query"
+        assert args["accountId"] == "u1"
+        assert args["position"] == 0
+        assert "filter" not in args
+        assert isinstance(call_id, str)
+
+    def test_build_contact_query_with_filter(self):
+        _, args, _ = build_contact_query("u1", filter_condition={"email": "alice@example.com"})
+        assert args["filter"] == {"email": "alice@example.com"}
+
+    def test_build_contact_query_with_sort_position_limit(self):
+        _, args, _ = build_contact_query("u1", sort=[{"property": "name"}], position=5, limit=10)
+        assert args["sort"] == [{"property": "name"}]
+        assert args["position"] == 5
+        assert args["limit"] == 10
+
+    def test_build_contact_get_by_query_result_structure(self):
+        method, args, call_id = build_contact_get_by_query_result("u1")
+        assert method == "ContactCard/get"
+        assert args["accountId"] == "u1"
+        assert "properties" not in args
+        assert isinstance(call_id, str)
+
+    def test_build_contact_get_by_query_result_references_query_call(self):
+        query_method, _, query_call_id = build_contact_query("u1")
+        _, args, _ = build_contact_get_by_query_result("u1")
+        assert args["#ids"] == {
+            "resultOf": query_call_id,
+            "name": query_method,
+            "path": "/ids",
+        }
+
+    def test_build_contact_get_by_query_result_with_properties(self):
+        _, args, _ = build_contact_get_by_query_result("u1", properties=["id", "emails"])
+        assert args["properties"] == ["id", "emails"]
+
+    def test_parse_contact_get_returns_contacts(self):
+        response_args = {"list": [_CONTACT_JSON_FULL, _CONTACT_JSON_MINIMAL]}
+        contacts = parse_contact_get(response_args)
+        assert len(contacts) == 2
+        assert isinstance(contacts[0], JMAPContact)
+        assert contacts[0].id == "c1"
+        assert contacts[1].id == "c2"
+
+    def test_parse_contact_get_missing_list_key(self):
+        assert parse_contact_get({}) == []
 
 
 from calendaring_jmap.client import JMAPClient
@@ -1368,6 +1704,12 @@ class TestJMAPClientBaseParsers:
     def test_parse_get_task_lists_response_returns_empty_list_without_match(self):
         assert _JMAPClientBase._parse_get_task_lists_response([]) == []
 
+    def test_parse_get_address_books_returns_empty_list_without_match(self):
+        assert _JMAPClientBase._parse_get_address_books([]) == []
+
+    def test_parse_search_contacts_response_returns_empty_list_without_match(self):
+        assert _JMAPClientBase._parse_search_contacts_response([]) == []
+
     def test_parse_get_task_response_raises_without_match(self):
         with pytest.raises(JMAPMethodError, match="No Task/get response"):
             _JMAPClientBase._parse_get_task_response([], api_url=_API_URL, task_id="t1")
@@ -1442,6 +1784,19 @@ class TestJMAPClientBaseParsers:
 
     def test_parse_get_task_lists_response_skips_unrelated_responses_in_batch(self):
         assert _JMAPClientBase._parse_get_task_lists_response([_UNRELATED_RESPONSE]) == []
+
+    def test_parse_get_address_books_skips_unrelated_responses_in_batch(self):
+        assert _JMAPClientBase._parse_get_address_books([_UNRELATED_RESPONSE]) == []
+
+    def test_parse_search_contacts_response_skips_unrelated_responses_in_batch(self):
+        assert _JMAPClientBase._parse_search_contacts_response([_UNRELATED_RESPONSE]) == []
+
+    def test_first_matching_list_returns_parser_result_for_matching_response(self):
+        matching = ("Widget/get", {"list": ["a", "b"]}, "c1")
+        result = _JMAPClientBase._first_matching_list(
+            [_UNRELATED_RESPONSE, matching], "Widget/get", lambda args: args["list"]
+        )
+        assert result == ["a", "b"]
 
     def test_parse_get_task_response_skips_unrelated_responses_in_batch(self):
         with pytest.raises(JMAPMethodError, match="No Task/get response"):
@@ -3643,6 +3998,25 @@ def _get_response(method_name: str, call_id: str, items: list[dict]) -> dict:
     }
 
 
+def _session_with_capabilities(account_capabilities, server_capabilities=None, state="state-abc"):
+    """Build a ``Session`` for a capability-gated code path test (free/busy,
+    contacts). ``server_capabilities`` defaults to the same keys as
+    ``account_capabilities``: every existing caller already means "this
+    account, on a server that supports this capability at all", so this
+    keeps their meaning unchanged. Pass it explicitly to test the
+    server-wide-unsupported case specifically (distinct from this account
+    not having it on a server that otherwise does)."""
+    return Session(
+        api_url=_API_URL,
+        account_id=_USERNAME,
+        state=state,
+        account_capabilities=account_capabilities,
+        server_capabilities=(
+            server_capabilities if server_capabilities is not None else account_capabilities
+        ),
+    )
+
+
 class _MockedClientMixin:
     """Shared client/response mocking for tests that drive JMAPClient
     through a mocked ``_http_session`` rather than real HTTP calls."""
@@ -3662,35 +4036,51 @@ class _MockedClientMixin:
         client._http_session = mock_http
         return mock_http
 
-    def _capturing_client(self, monkeypatch, resp):
-        """Return (client, captured) where captured["json"] is set on each POST."""
+    def _capturing_client_for(self, client, resp) -> dict:
+        """Like :meth:`_capturing_client`, but for an already-built ``client``."""
         captured: dict = {}
-        client = self._make_client()
 
         def capturing_post(*args, **kwargs):
             captured["json"] = kwargs.get("json", {})
             return self._make_mock(resp)
 
         self._mock_http(client, side_effect=capturing_post)
+        return captured
+
+    def _capturing_client(self, monkeypatch, resp):
+        """Return (client, captured) where captured["json"] is set on each POST."""
+        client = self._make_client()
+        captured = self._capturing_client_for(client, resp)
         return client, captured
 
+    def _client_with_capabilities(self, account_capabilities, server_capabilities=None):
+        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
+        client._session_cache = _session_with_capabilities(
+            account_capabilities, server_capabilities
+        )
+        return client
 
-def _query_get_response(items: list[dict]) -> dict:
-    """Batched [CalendarEvent/query, CalendarEvent/get] response envelope,
-    ids/queryState/total derived from ``items``. Shared by every test that
-    exercises a search-shaped call (``TestJMAPCalendar``, ``TestJMAPClientEvents``)."""
+
+def _query_get_response(
+    items: list[dict],
+    query_method: str = "CalendarEvent/query",
+    query_call_id: str = "ev-query-0",
+    get_method: str = "CalendarEvent/get",
+    get_call_id: str = "ev-get-1",
+) -> dict:
+    """Batched [<query_method>, <get_method>] response envelope, ids derived
+    from ``items``. Shared by every test that exercises a search-shaped
+    call (``TestJMAPCalendar``, ``TestJMAPClientEvents``, ``TestJMAPClientContacts``
+    and its async sibling)."""
+    query_args: dict = {
+        "ids": [i["id"] for i in items],
+        "queryState": "qs-1",
+        "total": len(items),
+    }
     return {
         "methodResponses": [
-            [
-                "CalendarEvent/query",
-                {"ids": [i["id"] for i in items], "queryState": "qs-1", "total": len(items)},
-                "ev-query-0",
-            ],
-            [
-                "CalendarEvent/get",
-                {"accountId": _USERNAME, "list": items, "notFound": []},
-                "ev-get-1",
-            ],
+            [query_method, query_args, query_call_id],
+            [get_method, {"accountId": _USERNAME, "list": items, "notFound": []}, get_call_id],
         ]
     }
 
@@ -4395,9 +4785,15 @@ def _availability_response(periods):
     }
 
 
+def _error_response(error_type: str, call_id: str) -> dict:
+    """A minimal ``error`` methodResponse envelope. Shared by every helper
+    that builds one for a specific method call id."""
+    return {"methodResponses": [["error", {"type": error_type}, call_id]]}
+
+
 def _availability_error_response(error_type):
     """Shared by the sync and async get_availability tests."""
-    return {"methodResponses": [["error", {"type": error_type}, "principal-getavailability-0"]]}
+    return _error_response(error_type, "principal-getavailability-0")
 
 
 class TestBusyIntervalFallbackConversion:
@@ -4467,16 +4863,6 @@ class TestBusyIntervalFallbackConversion:
 class TestJMAPClientFreeBusy(_MockedClientMixin):
     _PRINCIPALS_CAPS = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "user1"}}
 
-    def _client_with_capabilities(self, account_capabilities):
-        client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
-        client._session_cache = Session(
-            api_url=_API_URL,
-            account_id=_USERNAME,
-            state="state-abc",
-            account_capabilities=account_capabilities,
-        )
-        return client
-
     def _fallback_query_get_response(self, events: list[dict]) -> dict:
         """Batched [CalendarEvent/query, CalendarEvent/get] response for the
         availability fallback path specifically. Deliberately not
@@ -4514,13 +4900,7 @@ class TestJMAPClientFreeBusy(_MockedClientMixin):
 
     def test_get_availability_sends_principals_capability_and_utc_suffixed_dates(self, monkeypatch):
         client = self._client_with_capabilities(self._PRINCIPALS_CAPS)
-        captured: dict = {}
-
-        def capturing_post(*args, **kwargs):
-            captured["json"] = kwargs.get("json", {})
-            return self._make_mock(_availability_response([]))
-
-        self._mock_http(client, side_effect=capturing_post)
+        captured = self._capturing_client_for(client, _availability_response([]))
         client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
         assert "urn:ietf:params:jmap:principals" in captured["json"]["using"]
         call_args = captured["json"]["methodCalls"][0][1]
@@ -4565,13 +4945,7 @@ class TestJMAPClientFreeBusy(_MockedClientMixin):
     def test_get_availability_resolves_own_principal_id_from_session(self, monkeypatch):
         caps = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "principal-xyz"}}
         client = self._client_with_capabilities(caps)
-        captured: dict = {}
-
-        def capturing_post(*args, **kwargs):
-            captured["json"] = kwargs.get("json", {})
-            return self._make_mock(_availability_response([]))
-
-        self._mock_http(client, side_effect=capturing_post)
+        captured = self._capturing_client_for(client, _availability_response([]))
         client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
         assert captured["json"]["methodCalls"][0][1]["id"] == "principal-xyz"
 
@@ -4618,13 +4992,7 @@ class TestJMAPClientFreeBusy(_MockedClientMixin):
 
     def test_get_availability_fallback_uses_expand_recurrences(self, monkeypatch):
         client = self._client_with_capabilities({})
-        captured: dict = {}
-
-        def capturing_post(*args, **kwargs):
-            captured["json"] = kwargs.get("json", {})
-            return self._make_mock(self._fallback_query_get_response([]))
-
-        self._mock_http(client, side_effect=capturing_post)
+        captured = self._capturing_client_for(client, self._fallback_query_get_response([]))
         client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
         query_args = captured["json"]["methodCalls"][0][1]
         assert query_args["expandRecurrences"] is True
@@ -4680,6 +5048,163 @@ class TestJMAPClientFreeBusy(_MockedClientMixin):
         self._mock_http(client, response=self._make_mock(resp))
         with pytest.raises(JMAPMethodError, match="No Principal/getAvailability response"):
             client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+
+
+def _contact_query_get_response(contacts: list[dict]) -> dict:
+    """Batched [ContactCard/query, ContactCard/get] response envelope,
+    matching the shape _build_contact_search_calls produces. Shared by
+    the sync and async search_contacts tests."""
+    return _query_get_response(
+        contacts,
+        query_method="ContactCard/query",
+        query_call_id="contact-query-0",
+        get_method="ContactCard/get",
+        get_call_id="contact-get-1",
+    )
+
+
+def _contact_error_response(error_type: str) -> dict:
+    """Shared by the sync and async search_contacts tests."""
+    return _error_response(error_type, "contact-query-0")
+
+
+_CONTACTS_CAPS = {"urn:ietf:params:jmap:contacts": {"mayCreateAddressBook": True}}
+
+
+def _address_book_get_response(items):
+    """Shared by the sync and async get_address_books tests."""
+    return _get_response("AddressBook/get", "ab-get-0", items)
+
+
+class TestJMAPClientContacts(_MockedClientMixin):
+    def test_get_address_books_returns_address_books(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        self._mock_http(
+            client,
+            response=self._make_mock(_address_book_get_response([_ADDRESS_BOOK_JSON_FULL])),
+        )
+        books = client.get_address_books()
+        assert len(books) == 1
+        assert books[0].id == "ab1"
+
+    def test_get_address_books_sends_contacts_capability(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _address_book_get_response([]))
+        client.get_address_books()
+        assert "urn:ietf:params:jmap:contacts" in captured["json"]["using"]
+        assert CALENDAR_CAPABILITY not in captured["json"]["using"]
+
+    def test_get_address_books_returns_empty_list_without_capability(self, monkeypatch):
+        client = self._client_with_capabilities({})
+        mock_http = self._mock_http(client, response=self._make_mock({}))
+        assert client.get_address_books() == []
+        mock_http.post.assert_not_called()
+
+    def test_get_address_books_logs_warning_without_capability(self, monkeypatch, caplog):
+        client = self._client_with_capabilities({})
+        self._mock_http(client, response=self._make_mock({}))
+        with caplog.at_level("WARNING"):
+            client.get_address_books()
+        assert "urn:ietf:params:jmap:contacts" in caplog.text
+
+    def test_get_address_books_uses_passed_account_id(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _address_book_get_response([]))
+        client.get_address_books(account_id="other-account")
+        assert captured["json"]["methodCalls"][0][1]["accountId"] == "other-account"
+
+    def test_get_address_books_other_account_ignores_own_capability_gap(self, monkeypatch):
+        # See _can_skip_contacts_request: a foreign account is never judged
+        # by the session's own account_capabilities.
+        client = self._client_with_capabilities({}, server_capabilities=_CONTACTS_CAPS)
+        mock_http = self._mock_http(
+            client, response=self._make_mock(_address_book_get_response([]))
+        )
+        client.get_address_books(account_id="other-account")
+        mock_http.post.assert_called_once()
+
+    def test_get_address_books_skips_any_account_without_server_capability(self, monkeypatch):
+        # See _can_skip_contacts_request: server_capabilities applies to
+        # every account, unlike account_capabilities.
+        client = self._client_with_capabilities({}, server_capabilities={})
+        mock_http = self._mock_http(client, response=self._make_mock({}))
+        assert client.get_address_books(account_id="other-account") == []
+        mock_http.post.assert_not_called()
+
+    def test_search_contacts_returns_contacts(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        self._mock_http(
+            client,
+            response=self._make_mock(_contact_query_get_response([_CONTACT_JSON_FULL])),
+        )
+        contacts = client.search_contacts()
+        assert len(contacts) == 1
+        assert contacts[0].id == "c1"
+
+    def test_search_contacts_sends_contacts_capability(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _contact_query_get_response([]))
+        client.search_contacts()
+        assert "urn:ietf:params:jmap:contacts" in captured["json"]["using"]
+
+    def test_search_contacts_uses_passed_account_id(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _contact_query_get_response([]))
+        client.search_contacts(account_id="other-account")
+        assert captured["json"]["methodCalls"][0][1]["accountId"] == "other-account"
+        assert CALENDAR_CAPABILITY not in captured["json"]["using"]
+
+    def test_search_contacts_builds_text_filter(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _contact_query_get_response([]))
+        client.search_contacts(text="Alice")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"text": "Alice"}
+
+    def test_search_contacts_builds_email_filter(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _contact_query_get_response([]))
+        client.search_contacts(email="alice@example.com")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"email": "alice@example.com"}
+
+    def test_search_contacts_builds_combined_filter(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _contact_query_get_response([]))
+        client.search_contacts(text="Alice", email="alice@example.com")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"text": "Alice", "email": "alice@example.com"}
+
+    def test_search_contacts_no_filter_when_no_args(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_client_for(client, _contact_query_get_response([]))
+        client.search_contacts()
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert "filter" not in query_args
+
+    def test_search_contacts_raises_when_account_lacks_capability(self, monkeypatch):
+        # _CONTACTS_USING always sends the capability in "using", so a real
+        # server that supports Contacts but not for this account rejects
+        # the call at the method level, not the request level: confirmed
+        # live that this is accountNotSupportedByMethod, not unknownMethod.
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        resp = _contact_error_response("accountNotSupportedByMethod")
+        self._mock_http(client, response=self._make_mock(resp))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.search_contacts()
+        assert exc_info.value.error_type == "accountNotSupportedByMethod"
+
+    def test_search_contacts_raises_http_error_when_server_lacks_capability(self, monkeypatch):
+        # A server with no Contacts support at all rejects the whole
+        # request (unknownCapability, HTTP 400), before any methodResponses
+        # array exists: confirmed live this never reaches a JMAPMethodError.
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        mock_resp = self._make_mock({})
+        mock_resp.status_code = 400
+        mock_resp.raise_for_status = MagicMock(side_effect=_http_requests.HTTPError("HTTP 400"))
+        self._mock_http(client, response=mock_resp)
+        with pytest.raises(_http_requests.HTTPError):
+            client.search_contacts()
 
 
 class TestJMAPClientCalendars(_MockedClientMixin):
@@ -6074,13 +6599,10 @@ class TestAsyncJMAPClient:
 
     _PRINCIPALS_CAPS = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "user1"}}
 
-    def _client_with_capabilities(self, account_capabilities):
+    def _client_with_capabilities(self, account_capabilities, server_capabilities=None):
         client = AsyncJMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
-        client._session_cache = Session(
-            api_url=_API_URL,
-            account_id=_USERNAME,
-            state="state-async",
-            account_capabilities=account_capabilities,
+        client._session_cache = _session_with_capabilities(
+            account_capabilities, server_capabilities, state="state-async"
         )
         return client
 
@@ -6330,6 +6852,156 @@ class TestAsyncJMAPClient:
         self._patch_async_session(monkeypatch, resp)
         with pytest.raises(JMAPMethodError, match="No Principal/getAvailability response"):
             await client.get_availability(["user1"], "2026-09-21T00:00:00", "2026-09-22T00:00:00")
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_returns_address_books(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        self._patch_async_session(
+            monkeypatch, _address_book_get_response([_ADDRESS_BOOK_JSON_FULL])
+        )
+        books = await client.get_address_books()
+        assert len(books) == 1
+        assert books[0].id == "ab1"
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_sends_contacts_capability(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _address_book_get_response([])
+        )
+        await client.get_address_books()
+        assert "urn:ietf:params:jmap:contacts" in captured["json"]["using"]
+        assert CALENDAR_CAPABILITY not in captured["json"]["using"]
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_returns_empty_list_without_capability(self, monkeypatch):
+        client = self._client_with_capabilities({})
+        mock_http = self._patch_async_session(monkeypatch, {})
+        assert await client.get_address_books() == []
+        mock_http.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_logs_warning_without_capability(self, monkeypatch, caplog):
+        client = self._client_with_capabilities({})
+        self._patch_async_session(monkeypatch, {})
+        with caplog.at_level("WARNING"):
+            await client.get_address_books()
+        assert "urn:ietf:params:jmap:contacts" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_uses_passed_account_id(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _address_book_get_response([])
+        )
+        await client.get_address_books(account_id="other-account")
+        assert captured["json"]["methodCalls"][0][1]["accountId"] == "other-account"
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_other_account_ignores_own_capability_gap(self, monkeypatch):
+        client = self._client_with_capabilities({}, server_capabilities=_CONTACTS_CAPS)
+        mock_http = self._patch_async_session(monkeypatch, _address_book_get_response([]))
+        await client.get_address_books(account_id="other-account")
+        mock_http.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_address_books_skips_any_account_without_server_capability(self, monkeypatch):
+        client = self._client_with_capabilities({}, server_capabilities={})
+        mock_http = self._patch_async_session(monkeypatch, {})
+        assert await client.get_address_books(account_id="other-account") == []
+        mock_http.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_returns_contacts(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        self._patch_async_session(monkeypatch, _contact_query_get_response([_CONTACT_JSON_FULL]))
+        contacts = await client.search_contacts()
+        assert len(contacts) == 1
+        assert contacts[0].id == "c1"
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_sends_contacts_capability(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _contact_query_get_response([])
+        )
+        await client.search_contacts()
+        assert "urn:ietf:params:jmap:contacts" in captured["json"]["using"]
+        assert CALENDAR_CAPABILITY not in captured["json"]["using"]
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_uses_passed_account_id(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _contact_query_get_response([])
+        )
+        await client.search_contacts(account_id="other-account")
+        assert captured["json"]["methodCalls"][0][1]["accountId"] == "other-account"
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_builds_text_filter(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _contact_query_get_response([])
+        )
+        await client.search_contacts(text="Alice")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"text": "Alice"}
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_builds_email_filter(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _contact_query_get_response([])
+        )
+        await client.search_contacts(email="alice@example.com")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"email": "alice@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_builds_combined_filter(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _contact_query_get_response([])
+        )
+        await client.search_contacts(text="Alice", email="alice@example.com")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"text": "Alice", "email": "alice@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_no_filter_when_no_args(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _contact_query_get_response([])
+        )
+        await client.search_contacts()
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert "filter" not in query_args
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_raises_when_account_lacks_capability(self, monkeypatch):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        resp = _contact_error_response("accountNotSupportedByMethod")
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.search_contacts()
+        assert exc_info.value.error_type == "accountNotSupportedByMethod"
+
+    @pytest.mark.asyncio
+    async def test_search_contacts_raises_http_error_when_server_lacks_capability(
+        self, monkeypatch
+    ):
+        client = self._client_with_capabilities(_CONTACTS_CAPS)
+        mock_resp = self._make_mock_response({})
+        mock_resp.status_code = 400
+        mock_resp.raise_for_status = MagicMock(side_effect=_http_requests.HTTPError("HTTP 400"))
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        with pytest.raises(_http_requests.HTTPError):
+            await client.search_contacts()
 
     @pytest.mark.asyncio
     async def test_get_sync_token_sends_empty_ids(self, monkeypatch):

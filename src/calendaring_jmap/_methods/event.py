@@ -16,7 +16,12 @@ are defined in the JMAP Calendars specification.
 
 from __future__ import annotations
 
-from calendaring_jmap._methods import build_get, parse_set_response
+from calendaring_jmap._methods import (
+    build_get,
+    build_get_by_query_result,
+    build_query,
+    parse_set_response,
+)
 
 ## call_id of the CalendarEvent/query call built by build_event_query(), and
 ## of the result-referencing CalendarEvent/get call in
@@ -150,27 +155,25 @@ def build_event_query(
     Returns:
         A 3-tuple ``("CalendarEvent/query", arguments_dict, call_id)``.
     """
-    args: dict = {"accountId": account_id, "position": position}
-    if filter_condition is not None:
-        args["filter"] = filter_condition
-    if sort is not None:
-        args["sort"] = sort
-    if limit is not None:
-        args["limit"] = limit
+    method, args, call_id = build_query(
+        "CalendarEvent/query",
+        _EVENT_QUERY_CALL_ID,
+        account_id,
+        filter_condition,
+        sort,
+        position,
+        limit,
+    )
     if expand_recurrences:
         args["expandRecurrences"] = expand_recurrences
     if time_zone is not None:
         args["timeZone"] = time_zone
-    return ("CalendarEvent/query", args, _EVENT_QUERY_CALL_ID)
+    return (method, args, call_id)
 
 
 def build_event_get_by_query_result(account_id: str, properties: list[str] | None = None) -> tuple:
     """Build a ``CalendarEvent/get`` call that back-references the ids from
     the ``CalendarEvent/query`` call :func:`build_event_query` builds.
-
-    Uses a JMAP result reference (:rfc:`8620#section-3.7`) instead of a
-    literal ``ids`` list, so the two calls can be batched into one HTTP
-    request without a round trip between them.
 
     Args:
         account_id: The JMAP accountId, must match the query call's.
@@ -181,17 +184,14 @@ def build_event_get_by_query_result(account_id: str, properties: list[str] | Non
         to be appended after :func:`build_event_query`'s own return value in
         the same ``methodCalls`` list.
     """
-    args: dict = {
-        "accountId": account_id,
-        "#ids": {
-            "resultOf": _EVENT_QUERY_CALL_ID,
-            "name": "CalendarEvent/query",
-            "path": "/ids",
-        },
-    }
-    if properties is not None:
-        args["properties"] = properties
-    return ("CalendarEvent/get", args, _EVENT_GET_BY_QUERY_CALL_ID)
+    return build_get_by_query_result(
+        "CalendarEvent/get",
+        _EVENT_GET_BY_QUERY_CALL_ID,
+        "CalendarEvent/query",
+        _EVENT_QUERY_CALL_ID,
+        account_id,
+        properties,
+    )
 
 
 def build_event_set_create(
