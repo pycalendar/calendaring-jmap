@@ -28,6 +28,13 @@ from calendaring_jmap._methods.calendar import (
     parse_calendar_get,
     parse_calendar_set,
 )
+from calendaring_jmap._methods.contact import (
+    build_address_book_get,
+    build_contact_get_by_query_result,
+    build_contact_query,
+    parse_address_book_get,
+    parse_contact_get,
+)
 from calendaring_jmap._methods.event import (
     build_event_changes,
     build_event_get,
@@ -53,6 +60,7 @@ from calendaring_jmap._methods.task import (
 from calendaring_jmap.constants import (
     BUSY_STATUS_UNAVAILABLE,
     CALENDAR_CAPABILITY,
+    CONTACTS_CAPABILITY,
     CORE_CAPABILITY,
     LINK_REL_ENCLOSURE,
     PARTICIPATION_STATUS_ACCEPTED,
@@ -75,6 +83,7 @@ from calendaring_jmap.objects.attachment import JMAPAttachment
 from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
+from calendaring_jmap.objects.contact import JMAPAddressBook, JMAPContact
 from calendaring_jmap.session import Session, _expand_uri_template, fetch_session
 
 log = logging.getLogger("calendaring_jmap")
@@ -82,6 +91,7 @@ log = logging.getLogger("calendaring_jmap")
 _DEFAULT_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY]
 _TASK_USING = [CORE_CAPABILITY, TASK_CAPABILITY]
 _PRINCIPALS_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY, PRINCIPALS_CAPABILITY]
+_CONTACTS_USING = [CORE_CAPABILITY, CONTACTS_CAPABILITY]
 
 
 class _JMAPClientBase:
@@ -157,6 +167,17 @@ class _JMAPClientBase:
         return account_id if account_id is not None else session.account_id
 
     @staticmethod
+    def _account_supports(session: Session, capability: str) -> bool:
+        """Return whether the session's own account advertises ``capability``.
+
+        ``session.account_capabilities`` (like ``session.account_id``) is
+        scoped to the account chosen for calendars, so this only ever says
+        something about that one account, never a different one; use
+        ``session.server_capabilities`` for a server-wide check instead.
+        """
+        return capability in session.account_capabilities
+
+    @staticmethod
     def _supports_principals(session: Session) -> bool:
         """Return whether this account advertises :rfc:`9670` Principal support.
 
@@ -166,7 +187,7 @@ class _JMAPClientBase:
         advertising that sub-capability, so checking for it would wrongly
         skip Cyrus every time.
         """
-        return PRINCIPALS_CAPABILITY in session.account_capabilities
+        return _JMAPClientBase._account_supports(session, PRINCIPALS_CAPABILITY)
 
     @staticmethod
     def _current_user_principal_id(session: Session) -> str | None:
@@ -200,6 +221,38 @@ class _JMAPClientBase:
         return account_id == session.account_id and _JMAPClientBase._supports_principals(session)
 
     @staticmethod
+    def _can_skip_contacts_request(session: Session, account_id: str) -> bool:
+        """Return whether ``get_address_books`` may skip the request and
+        return ``[]`` for ``account_id`` without ever asking the server.
+
+        ``session.server_capabilities`` says something about every account,
+        so a server with no Contacts support at all is honored regardless
+        of ``account_id``. ``session.account_capabilities`` only ever
+        describes the session's own account (like ``session.account_id``
+        itself), so the narrower "this account specifically lacks it"
+        check only applies there; a different account on a server that
+        does support Contacts always sends the real request and lets a
+        genuine error surface, the same way every other capability-gated
+        method that takes an explicit ``account_id`` already does.
+        """
+        if CONTACTS_CAPABILITY not in session.server_capabilities:
+            return True
+        return account_id == session.account_id and not _JMAPClientBase._account_supports(
+            session, CONTACTS_CAPABILITY
+        )
+
+    @staticmethod
+    def _warn_contacts_unsupported(account_id: str) -> None:
+        """Log the warning ``get_address_books`` emits in place of raising
+        when ``account_id`` doesn't advertise Contacts support."""
+        log.warning(
+            "Account %s does not advertise capability %s; get_address_books "
+            "returning an empty list instead of raising.",
+            account_id,
+            CONTACTS_CAPABILITY,
+        )
+
+    @staticmethod
     def _as_utc_datetime(local_datetime: str) -> str:
         """Convert one of ``get_availability``'s own UTC-treated
         ``start``/``end`` strings to the ``UTCDateTime`` format
@@ -217,6 +270,15 @@ class _JMAPClientBase:
         )
 
     @staticmethod
+    def _filter_from(**conditions) -> dict | None:
+        """Build a FilterCondition dict from keyword args, dropping any
+        that are ``None``, or ``None`` itself if every one was. Shared by
+        every ``_build_*_search_calls`` that builds a filter this way.
+        """
+        filter_dict = {k: v for k, v in conditions.items() if v is not None}
+        return filter_dict or None
+
+    @staticmethod
     def _build_event_search_calls(
         account_id: str,
         calendar_id: str | None,
@@ -225,18 +287,12 @@ class _JMAPClientBase:
         text: str | None,
     ) -> list[tuple]:
         """Return a batched [CalendarEvent/query, CalendarEvent/get] call list for _search."""
-        filter_dict: dict = {}
-        if calendar_id is not None:
-            # JMAP Calendars draft-29 §5.11.1 defines this as "inCalendar"
-            # (singular, one Id), not "inCalendars" (a list).
-            filter_dict["inCalendar"] = calendar_id
-        if start is not None:
-            filter_dict["after"] = start
-        if end is not None:
-            filter_dict["before"] = end
-        if text is not None:
-            filter_dict["text"] = text
-        query_call = build_event_query(account_id, filter_condition=filter_dict or None)
+        # JMAP Calendars draft-29 section 5.11.1 defines this as "inCalendar"
+        # (singular, one Id), not "inCalendars" (a list).
+        filter_condition = _JMAPClientBase._filter_from(
+            inCalendar=calendar_id, after=start, before=end, text=text
+        )
+        query_call = build_event_query(account_id, filter_condition=filter_condition)
         get_call = build_event_get_by_query_result(account_id)
         return [query_call, get_call]
 
@@ -262,6 +318,16 @@ class _JMAPClientBase:
         get_call = build_event_get_by_query_result(
             account_id, properties=["start", "duration", "freeBusyStatus", "timeZone"]
         )
+        return [query_call, get_call]
+
+    @staticmethod
+    def _build_contact_search_calls(
+        account_id: str, text: str | None, email: str | None
+    ) -> list[tuple]:
+        """Return a batched [ContactCard/query, ContactCard/get] call list for search_contacts."""
+        filter_condition = _JMAPClientBase._filter_from(text=text, email=email)
+        query_call = build_contact_query(account_id, filter_condition=filter_condition)
+        get_call = build_contact_get_by_query_result(account_id)
         return [query_call, get_call]
 
     @staticmethod
@@ -382,18 +448,46 @@ class _JMAPClientBase:
     # ---------------------------------------------------------------------------
 
     @staticmethod
+    def _first_matching_list(responses: list, method_name: str, parser) -> list:
+        """Return ``parser(resp_args)`` for the first response whose method
+        name is ``method_name``, or ``[]`` if there is none.
+
+        Shared by every ``_parse_*`` method whose whole job is "find one
+        response by method name, hand its args to a parser, otherwise
+        return an empty list" (``parser`` can itself bind extra state onto
+        each result, e.g. :meth:`_parse_get_calendars`'s own client/account
+        binding). A method that needs to raise instead of returning ``[]``
+        (e.g. :meth:`_parse_get_sync_token_response`) doesn't fit this
+        shape and isn't a caller.
+        """
+        for name, resp_args, _ in responses:
+            if name == method_name:
+                return parser(resp_args)
+        return []
+
+    @staticmethod
     def _parse_get_calendars(
         responses: list, client, is_async: bool, account_id: str | None = None
     ) -> list[JMAPCalendar[Any]]:
-        for method_name, resp_args, _ in responses:
-            if method_name == "Calendar/get":
-                calendars = parse_calendar_get(resp_args)
-                for cal in calendars:
-                    cal._client = client
-                    cal._is_async = is_async
-                    cal._account_id = account_id
-                return calendars
-        return []
+        def _bind(resp_args: dict) -> list[JMAPCalendar[Any]]:
+            calendars = parse_calendar_get(resp_args)
+            for cal in calendars:
+                cal._client = client
+                cal._is_async = is_async
+                cal._account_id = account_id
+            return calendars
+
+        return _JMAPClientBase._first_matching_list(responses, "Calendar/get", _bind)
+
+    @staticmethod
+    def _parse_get_address_books(responses: list) -> list[JMAPAddressBook]:
+        return _JMAPClientBase._first_matching_list(
+            responses, "AddressBook/get", parse_address_book_get
+        )
+
+    @staticmethod
+    def _parse_search_contacts_response(responses: list) -> list[JMAPContact]:
+        return _JMAPClientBase._first_matching_list(responses, "ContactCard/get", parse_contact_get)
 
     @staticmethod
     def _no_set_response_error(api_url: str, set_method: str) -> JMAPMethodError:
@@ -508,13 +602,28 @@ class _JMAPClientBase:
     def _parse_search_response(
         responses: list, parent: JMAPCalendar | None
     ) -> list[JMAPCalendarObject]:
-        for method_name, resp_args, _ in responses:
-            if method_name == "CalendarEvent/get":
-                return [
-                    JMAPCalendarObject(data=item, parent=parent)
-                    for item in parse_event_get(resp_args)
-                ]
-        return []
+        return _JMAPClientBase._first_matching_list(
+            responses,
+            "CalendarEvent/get",
+            lambda resp_args: [
+                JMAPCalendarObject(data=item, parent=parent) for item in parse_event_get(resp_args)
+            ],
+        )
+
+    @staticmethod
+    def _parse_availability_fallback_response(responses: list) -> list[BusyInterval]:
+        """Parse the ``CalendarEvent/get`` response from
+        ``_build_availability_fallback_calls`` into busy intervals.
+
+        Shared by the sync and async ``_get_availability_via_fallback``.
+        """
+        return _JMAPClientBase._first_matching_list(
+            responses,
+            "CalendarEvent/get",
+            lambda resp_args: _JMAPClientBase._busy_intervals_from_events(
+                parse_event_get(resp_args)
+            ),
+        )
 
     @staticmethod
     def _parse_get_sync_token_response(responses: list, api_url: str) -> str:
@@ -572,10 +681,7 @@ class _JMAPClientBase:
 
     @staticmethod
     def _parse_get_task_lists_response(responses: list) -> list[dict]:
-        for method_name, resp_args, _ in responses:
-            if method_name == "TaskList/get":
-                return parse_task_list_get(resp_args)
-        return []
+        return _JMAPClientBase._first_matching_list(responses, "TaskList/get", parse_task_list_get)
 
     @staticmethod
     def _parse_get_task_response(responses: list, api_url: str, task_id: str) -> dict:
@@ -1551,10 +1657,99 @@ class JMAPClient(_JMAPClientBase):
     ) -> list[BusyInterval]:
         calls = self._build_availability_fallback_calls(account_id, start, end)
         responses = self._request(calls)
-        for method_name, resp_args, _ in responses:
-            if method_name == "CalendarEvent/get":
-                return self._busy_intervals_from_events(parse_event_get(resp_args))
-        return []
+        return self._parse_availability_fallback_response(responses)
+
+    def get_address_books(self, account_id: str | None = None) -> list[JMAPAddressBook]:
+        """Fetch all address books for an account.
+
+        A server that doesn't advertise :rfc:`9610` Contacts support at all
+        does not raise here: it logs a warning and returns an empty list
+        instead, regardless of ``account_id``. For a server that does
+        support Contacts in general but a different ``account_id`` lacks
+        it specifically, a genuine error surfaces normally instead, the
+        same as :meth:`search_contacts` always does (see
+        :meth:`_can_skip_contacts_request` for why only the session's own
+        account gets the graceful behavior).
+
+        Args:
+            account_id: Pass a different account here to browse address
+                books another user has shared with you. Defaults to the
+                session's own (calendar) account.
+
+        Returns:
+            List of :class:`~calendaring_jmap.objects.contact.JMAPAddressBook`
+            objects, or ``[]`` if Contacts isn't supported (see above).
+
+        Raises:
+            JMAPMethodError: If a different account's own lack of Contacts
+                support surfaces as a method-level error (e.g.
+                ``accountNotSupportedByMethod``), or the request otherwise
+                fails.
+            requests.HTTPError: If the request otherwise fails at the HTTP
+                level.
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        if self._can_skip_contacts_request(session, target_account):
+            self._warn_contacts_unsupported(target_account)
+            return []
+        responses = self._request([build_address_book_get(target_account)], using=_CONTACTS_USING)
+        return self._parse_get_address_books(responses)
+
+    def search_contacts(
+        self,
+        text: str | None = None,
+        email: str | None = None,
+        account_id: str | None = None,
+    ) -> list[JMAPContact]:
+        """Search for contact cards.
+
+        All parameters are optional; omitting both returns every contact in
+        the account. Results are fetched in a single batched JMAP request
+        using a result reference from ``ContactCard/query`` into
+        ``ContactCard/get``, the same pattern :meth:`search_events` uses.
+
+        Unlike :meth:`get_address_books`, an account that doesn't advertise
+        :rfc:`9610` Contacts support raises normally here, not an empty
+        list: this method's whole purpose is resolving contact information
+        for something the caller is about to act on (e.g. an invitation),
+        so silently returning nothing risks going unnoticed. Confirmed live
+        that the actual error is either a request-level ``requests.HTTPError``
+        (HTTP 400, ``unknownCapability``) if the server has no Contacts
+        support at all, or a method-level ``JMAPMethodError`` with
+        ``error_type`` ``"accountNotSupportedByMethod"`` if the server
+        supports Contacts but this particular account doesn't.
+
+        Args:
+            text: Free-text search across the whole card. Confirmed live
+                that Cyrus matches this as a substring against the name, not
+                exact-only. Confirmed live that Stalwart v0.16.21 does not
+                match this against the card's name at all, only against the
+                email address (the same reach ``email`` already has there):
+                a name-only search that works on Cyrus can silently return
+                nothing on Stalwart. Use ``email`` when the value being
+                searched for might be an email address.
+            email: Match against any address in the card's ``emails``.
+                Confirmed live that both Cyrus and Stalwart match this as a
+                substring too, e.g. ``"alice"`` matches
+                ``"alice@example.com"``.
+            account_id: Pass a different account here to search an address
+                book shared with you.
+
+        Returns:
+            List of :class:`~calendaring_jmap.objects.contact.JMAPContact` instances.
+
+        Raises:
+            JMAPMethodError: If the account doesn't support Contacts (see
+                above), or the request otherwise fails.
+            requests.HTTPError: If the server has no Contacts support at all
+                (see above).
+        """
+        session = self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        calls = self._build_contact_search_calls(target_account, text, email)
+        responses = self._request(calls, using=_CONTACTS_USING)
+        return self._parse_search_contacts_response(responses)
 
     def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.

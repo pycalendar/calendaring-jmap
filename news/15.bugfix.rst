@@ -1,0 +1,1 @@
+On Stalwart, ``search_contacts``'s ``text`` filter does not match against a contact's name, only against its email address. A name-only ``text`` search that finds a contact on Cyrus can silently return nothing on Stalwart; use ``email`` when searching for an address.

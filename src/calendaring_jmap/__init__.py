@@ -44,6 +44,7 @@ from calendaring_jmap.objects.attachment import JMAPAttachment
 from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
+from calendaring_jmap.objects.contact import JMAPAddressBook, JMAPContact
 
 
 def get_jmap_client(**kwargs) -> JMAPClient | None:
@@ -91,12 +92,14 @@ def get_async_jmap_client(**kwargs) -> AsyncJMAPClient | None:
 __all__ = [
     "AsyncJMAPClient",
     "BusyInterval",
+    "JMAPAddressBook",
     "JMAPAttachment",
     "JMAPAuthError",
     "JMAPCalendar",
     "JMAPCalendarObject",
     "JMAPCapabilityError",
     "JMAPClient",
+    "JMAPContact",
     "JMAPError",
     "JMAPMethodError",
     "__version__",

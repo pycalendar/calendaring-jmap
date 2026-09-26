@@ -38,13 +38,13 @@ from calendaring_jmap._methods.calendar import (
     build_calendar_set_update,
     parse_calendar_set,
 )
+from calendaring_jmap._methods.contact import build_address_book_get
 from calendaring_jmap._methods.event import (
     build_event_changes,
     build_event_get,
     build_event_set_create,
     build_event_set_destroy,
     build_event_set_update,
-    parse_event_get,
     parse_event_set,
 )
 from calendaring_jmap._methods.principal import build_get_availability, parse_get_availability
@@ -56,7 +56,13 @@ from calendaring_jmap._methods.task import (
     build_task_set_update,
     parse_task_set,
 )
-from calendaring_jmap.client import _DEFAULT_USING, _PRINCIPALS_USING, _TASK_USING, _JMAPClientBase
+from calendaring_jmap.client import (
+    _CONTACTS_USING,
+    _DEFAULT_USING,
+    _PRINCIPALS_USING,
+    _TASK_USING,
+    _JMAPClientBase,
+)
 from calendaring_jmap.constants import (
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
@@ -72,6 +78,7 @@ from calendaring_jmap.objects.attachment import JMAPAttachment
 from calendaring_jmap.objects.busy_interval import BusyInterval
 from calendaring_jmap.objects.calendar import JMAPCalendar
 from calendaring_jmap.objects.calendar_object import JMAPCalendarObject
+from calendaring_jmap.objects.contact import JMAPAddressBook, JMAPContact
 from calendaring_jmap.session import Session, _expand_uri_template, async_fetch_session
 
 log = logging.getLogger("calendaring_jmap")
@@ -808,10 +815,39 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> list[BusyInterval]:
         calls = self._build_availability_fallback_calls(account_id, start, end)
         responses = await self._request(calls)
-        for method_name, resp_args, _ in responses:
-            if method_name == "CalendarEvent/get":
-                return self._busy_intervals_from_events(parse_event_get(resp_args))
-        return []
+        return self._parse_availability_fallback_response(responses)
+
+    async def get_address_books(self, account_id: str | None = None) -> list[JMAPAddressBook]:
+        """Fetch all address books for an account.
+
+        See :meth:`JMAPClient.get_address_books` for the full semantics,
+        including the capability-fallback behavior.
+        """
+        session = await self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        if self._can_skip_contacts_request(session, target_account):
+            self._warn_contacts_unsupported(target_account)
+            return []
+        responses = await self._request(
+            [build_address_book_get(target_account)], using=_CONTACTS_USING
+        )
+        return self._parse_get_address_books(responses)
+
+    async def search_contacts(
+        self,
+        text: str | None = None,
+        email: str | None = None,
+        account_id: str | None = None,
+    ) -> list[JMAPContact]:
+        """Search for contact cards.
+
+        See :meth:`JMAPClient.search_contacts` for the full semantics.
+        """
+        session = await self._get_session()
+        target_account = self._resolve_account(session, account_id)
+        calls = self._build_contact_search_calls(target_account, text, email)
+        responses = await self._request(calls, using=_CONTACTS_USING)
+        return self._parse_search_contacts_response(responses)
 
     async def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.

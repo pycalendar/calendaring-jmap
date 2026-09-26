@@ -16,4 +16,7 @@
 .. automodule:: calendaring_jmap.objects.attachment
    :members:
 
+.. automodule:: calendaring_jmap.objects.contact
+   :members:
+
 See :doc:`errors` for the exception hierarchy.
