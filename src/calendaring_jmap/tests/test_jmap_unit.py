@@ -1255,6 +1255,12 @@ class TestJMAPContact:
         contact = JMAPContact(id="c6", name={})
         assert contact.display_name() is None
 
+    def test_display_name_none_when_name_present_but_empty_full_and_components(self):
+        # A non-empty name dict (unlike the {} case above, which already
+        # short-circuits earlier) with neither full nor components set.
+        contact = JMAPContact(id="c6b", name={"full": None, "components": None})
+        assert contact.display_name() is None
+
     def test_primary_email_picks_lowest_pref(self):
         # _CONTACT_JSON_FULL's "e2" entry has pref 1 (most preferred);
         # "e1" has pref 2.
