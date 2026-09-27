@@ -48,6 +48,12 @@ from calendaring_jmap._methods.event import (
     parse_event_set,
 )
 from calendaring_jmap._methods.principal import build_get_availability, parse_get_availability
+from calendaring_jmap._methods.push import (
+    build_push_subscription_set_create,
+    build_push_subscription_set_destroy,
+    build_push_subscription_set_update,
+    parse_push_subscription_set,
+)
 from calendaring_jmap._methods.task import (
     build_task_get,
     build_task_list_get,
@@ -92,6 +98,9 @@ _DEFAULT_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY]
 _TASK_USING = [CORE_CAPABILITY, TASK_CAPABILITY]
 _PRINCIPALS_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY, PRINCIPALS_CAPABILITY]
 _CONTACTS_USING = [CORE_CAPABILITY, CONTACTS_CAPABILITY]
+#: PushSubscription is part of JMAP core (:rfc:`8620#section-7.2`), not a
+#: capability-gated extension, so no capability beyond core is ever needed.
+_PUSH_USING = [CORE_CAPABILITY]
 
 
 class _JMAPClientBase:
@@ -1750,6 +1759,154 @@ class JMAPClient(_JMAPClientBase):
         calls = self._build_contact_search_calls(target_account, text, email)
         responses = self._request(calls, using=_CONTACTS_USING)
         return self._parse_search_contacts_response(responses)
+
+    def subscribe_push(
+        self,
+        callback_url: str,
+        device_client_id: str,
+        types: list[str] | None = None,
+    ) -> str:
+        """Register a push subscription (:rfc:`8620#section-7.2`).
+
+        This only creates the subscription; it does not complete the
+        verification handshake. Immediately after this call, the server
+        POSTs a ``PushVerification`` object (containing a
+        ``verificationCode``) to ``callback_url``. The server will not
+        push any further notifications until that code is submitted via
+        :meth:`confirm_push_verification`. This client has no way to
+        receive that POST itself, since it is an API client, not an HTTP
+        server; the caller's own ``callback_url`` endpoint must extract
+        the code from the request it receives and pass it along.
+
+        Unlike most create/update/delete methods in this client, none of
+        the push subscription methods (this one, :meth:`confirm_push_verification`,
+        :meth:`renew_push`, :meth:`unsubscribe_push`) take an ``account_id``
+        parameter: PushSubscription is not account-scoped
+        (:rfc:`8620#section-7.2.2`).
+
+        Args:
+            callback_url: Absolute URL the server will POST notifications
+                to. Must begin with ``https://`` and be publicly
+                reachable by the server: this will not work behind
+                localhost without tunneling.
+            device_client_id: Caller-chosen id identifying the device/app
+                combination creating this subscription, so the caller can
+                recognize its own subscriptions later (e.g. to renew or
+                unsubscribe them) even after losing other local state.
+                Confirmed live that neither test server generates or
+                substitutes one, so a fixed value across every install of
+                a library or app would collide across devices; the RFC's
+                own text requires this to differ per device and per
+                vendor, and to not contain an unobfuscated device id, so
+                it cannot be generated internally on the caller's behalf.
+            types: List of type names to receive notifications for (e.g.
+                ``"CalendarEvent"``). Defaults to ``["CalendarEvent"]``.
+                Pass ``None`` explicitly for the server behavior of
+                pushing all types (not the default here, since it is a
+                broader behavior than this default).
+
+        Returns:
+            The server-assigned JMAP PushSubscription ID.
+
+        Raises:
+            JMAPMethodError: If the server rejects the create request, or
+                does not implement PushSubscription at all. Confirmed live
+                that Cyrus does not implement ``PushSubscription/set``
+                (``unknownMethod``); Stalwart does.
+        """
+        if types is None:
+            types = ["CalendarEvent"]
+        session = self._get_session()
+        call = build_push_subscription_set_create(device_client_id, callback_url, types)
+        responses = self._request([call], using=_PUSH_USING)
+        return self._parse_create_response(
+            responses, session.api_url, "PushSubscription/set", parse_push_subscription_set
+        )
+
+    def _update_push_subscription(self, subscription_id: str, patch: dict) -> None:
+        """Shared implementation for :meth:`confirm_push_verification` and
+        :meth:`renew_push`: both are a single-field ``PushSubscription/set``
+        update, differing only in which field they patch."""
+        session = self._get_session()
+        call = build_push_subscription_set_update(subscription_id, patch)
+        responses = self._request([call], using=_PUSH_USING)
+        self._parse_update_response(
+            responses,
+            session.api_url,
+            "PushSubscription/set",
+            parse_push_subscription_set,
+            subscription_id,
+        )
+
+    def confirm_push_verification(self, subscription_id: str, verification_code: str) -> None:
+        """Submit the verification code the server POSTed to ``callback_url``.
+
+        Required to complete :meth:`subscribe_push`'s handshake: the
+        server "MUST NOT make any further requests to the URL" until this
+        is called with the matching code (:rfc:`8620#section-7.2.2`).
+        Confirmed live that Stalwart rejects a wrong code with
+        ``invalidProperties`` rather than silently ignoring it. See
+        :meth:`subscribe_push` for the ``account_id`` parameter note.
+
+        Args:
+            subscription_id: The JMAP PushSubscription ID returned by
+                :meth:`subscribe_push`.
+            verification_code: The ``verificationCode`` from the
+                ``PushVerification`` payload the server POSTed to the
+                subscription's callback URL.
+
+        Raises:
+            JMAPMethodError: If the code doesn't match (``error_type``
+                ``"invalidProperties"``), or the subscription doesn't exist.
+        """
+        self._update_push_subscription(subscription_id, {"verificationCode": verification_code})
+
+    def renew_push(self, subscription_id: str, expires: str | None = None) -> None:
+        """Extend (or shorten) a push subscription's expiry.
+
+        Takes an ``expires`` parameter rather than none at all: a renewal
+        with no way to state the new expiry would have nothing to send in
+        the update.
+
+        Args:
+            subscription_id: The JMAP PushSubscription ID to renew.
+            expires: New ``UTCDateTime`` expiry, or ``None`` to request no
+                expiration at all (:rfc:`8620#section-7.2`: ``null`` means
+                "no expiration"). The server may cap or otherwise modify
+                the requested value; confirmed live that Stalwart caps a
+                far-future request to its own maximum (around 7 days
+                out).
+
+        See :meth:`subscribe_push` for the ``account_id`` parameter note.
+
+        Raises:
+            JMAPMethodError: If the server rejects the update, or the
+                subscription doesn't exist.
+        """
+        self._update_push_subscription(subscription_id, {"expires": expires})
+
+    def unsubscribe_push(self, subscription_id: str) -> None:
+        """Destroy a push subscription.
+
+        See :meth:`subscribe_push` for the ``account_id`` parameter note.
+
+        Args:
+            subscription_id: The JMAP PushSubscription ID to destroy.
+
+        Raises:
+            JMAPMethodError: If the server rejects the delete, or the
+                subscription doesn't exist.
+        """
+        session = self._get_session()
+        call = build_push_subscription_set_destroy(subscription_id)
+        responses = self._request([call], using=_PUSH_USING)
+        self._parse_delete_response(
+            responses,
+            session.api_url,
+            "PushSubscription/set",
+            parse_push_subscription_set,
+            subscription_id,
+        )
 
     def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.

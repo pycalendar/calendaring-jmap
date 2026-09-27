@@ -1468,6 +1468,66 @@ class TestContactMethodBuilders:
         assert parse_contact_get({}) == []
 
 
+from calendaring_jmap._methods.push import (
+    build_push_subscription_set_create,
+    build_push_subscription_set_destroy,
+    build_push_subscription_set_update,
+    parse_push_subscription_set,
+)
+
+
+class TestPushMethodBuilders:
+    def test_build_push_subscription_set_create_structure(self):
+        method, args, call_id = build_push_subscription_set_create(
+            "device1", "https://example.com/push", ["CalendarEvent"]
+        )
+        assert method == "PushSubscription/set"
+        assert "accountId" not in args
+        assert args["create"] == {
+            "new-0": {
+                "deviceClientId": "device1",
+                "url": "https://example.com/push",
+                "types": ["CalendarEvent"],
+            }
+        }
+        assert isinstance(call_id, str)
+
+    def test_build_push_subscription_set_create_with_none_types(self):
+        _, args, _ = build_push_subscription_set_create("device1", "https://example.com/push", None)
+        assert args["create"]["new-0"]["types"] is None
+
+    def test_build_push_subscription_set_update_structure(self):
+        method, args, call_id = build_push_subscription_set_update(
+            "sub1", {"expires": "2026-12-01T00:00:00Z"}
+        )
+        assert method == "PushSubscription/set"
+        assert "accountId" not in args
+        assert args["update"] == {"sub1": {"expires": "2026-12-01T00:00:00Z"}}
+
+    def test_build_push_subscription_set_destroy_structure(self):
+        method, args, call_id = build_push_subscription_set_destroy("sub1")
+        assert method == "PushSubscription/set"
+        assert "accountId" not in args
+        assert args["destroy"] == ["sub1"]
+
+    def test_parse_push_subscription_set_returns_created(self):
+        created, updated, destroyed, not_created, not_updated, not_destroyed = (
+            parse_push_subscription_set({"created": {"new-0": {"id": "sub1"}}})
+        )
+        assert created == {"new-0": {"id": "sub1"}}
+        assert updated == {}
+        assert destroyed == []
+        assert not_created == {}
+        assert not_updated == {}
+        assert not_destroyed == {}
+
+    def test_parse_push_subscription_set_returns_not_updated(self):
+        _, _, _, _, not_updated, _ = parse_push_subscription_set(
+            {"notUpdated": {"sub1": {"type": "invalidProperties"}}}
+        )
+        assert not_updated == {"sub1": {"type": "invalidProperties"}}
+
+
 from calendaring_jmap.client import JMAPClient
 
 _CALENDAR_GET_RESPONSE = {
@@ -5207,6 +5267,167 @@ class TestJMAPClientContacts(_MockedClientMixin):
             client.search_contacts()
 
 
+def _push_set_response(**kwargs) -> dict:
+    """Shared by the sync and async push tests."""
+    return _set_response("PushSubscription/set", "push-set-create-0", **kwargs)
+
+
+def _push_error_response(error_type: str) -> dict:
+    """Shared by the sync and async push tests."""
+    return _error_response(error_type, "push-set-create-0")
+
+
+def _push_update_response(**kwargs) -> dict:
+    """Shared by the sync and async push tests."""
+    return _set_response("PushSubscription/set", "push-set-update-0", **kwargs)
+
+
+def _push_destroy_response(**kwargs) -> dict:
+    """Shared by the sync and async push tests."""
+    return _set_response("PushSubscription/set", "push-set-destroy-0", **kwargs)
+
+
+class TestJMAPClientPush(_MockedClientMixin):
+    def test_subscribe_push_returns_id(self, monkeypatch):
+        client = self._make_client()
+        self._mock_http(
+            client, response=self._make_mock(_push_set_response(created={"new-0": {"id": "sub1"}}))
+        )
+        sub_id = client.subscribe_push("https://example.com/push", "device1")
+        assert sub_id == "sub1"
+
+    def test_subscribe_push_sends_device_client_id_and_url(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(
+            client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        client.subscribe_push("https://example.com/push", "device1")
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["deviceClientId"] == "device1"
+        assert created["url"] == "https://example.com/push"
+
+    def test_subscribe_push_defaults_types_to_calendar_event(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(
+            client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        client.subscribe_push("https://example.com/push", "device1")
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["types"] == ["CalendarEvent"]
+
+    def test_subscribe_push_passes_explicit_types(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(
+            client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        client.subscribe_push("https://example.com/push", "device1", types=["Calendar", "Task"])
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["types"] == ["Calendar", "Task"]
+
+    def test_subscribe_push_empty_types_list_not_replaced_by_default(self, monkeypatch):
+        # An empty list is a real, distinct wire value from None: only None
+        # triggers the ["CalendarEvent"] default (see subscribe_push's own
+        # "if types is None" check), an empty list is sent through as-is.
+        client = self._make_client()
+        captured = self._capturing_client_for(
+            client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        client.subscribe_push("https://example.com/push", "device1", types=[])
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["types"] == []
+
+    def test_subscribe_push_sends_only_core_capability(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(
+            client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        client.subscribe_push("https://example.com/push", "device1")
+        assert captured["json"]["using"] == ["urn:ietf:params:jmap:core"]
+
+    def test_subscribe_push_never_sends_account_id(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(
+            client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        client.subscribe_push("https://example.com/push", "device1")
+        assert "accountId" not in captured["json"]["methodCalls"][0][1]
+
+    def test_subscribe_push_raises_on_not_created(self, monkeypatch):
+        client = self._make_client()
+        self._mock_http(
+            client,
+            response=self._make_mock(
+                _push_set_response(notCreated={"new-0": {"type": "invalidProperties"}})
+            ),
+        )
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.subscribe_push("https://example.com/push", "device1")
+        assert exc_info.value.error_type == "invalidProperties"
+
+    def test_subscribe_push_raises_unknown_method_when_unsupported(self, monkeypatch):
+        # Confirmed live that Cyrus does not implement PushSubscription/set
+        # at all: this is what a real, unsupported server looks like, and
+        # there is deliberately no capability-check fallback for it (unlike
+        # get_address_books), since PushSubscription needs no capability
+        # beyond core, which every request already sends.
+        client = self._make_client()
+        self._mock_http(client, response=self._make_mock(_push_error_response("unknownMethod")))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.subscribe_push("https://example.com/push", "device1")
+        assert exc_info.value.error_type == "unknownMethod"
+
+    def test_confirm_push_verification_sends_verification_code(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(client, _push_update_response(updated={"sub1": None}))
+        client.confirm_push_verification("sub1", "code123")
+        update = captured["json"]["methodCalls"][0][1]["update"]
+        assert update == {"sub1": {"verificationCode": "code123"}}
+
+    def test_confirm_push_verification_raises_on_wrong_code(self, monkeypatch):
+        client = self._make_client()
+        resp = _push_update_response(notUpdated={"sub1": {"type": "invalidProperties"}})
+        self._mock_http(client, response=self._make_mock(resp))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.confirm_push_verification("sub1", "wrong-code")
+        assert exc_info.value.error_type == "invalidProperties"
+
+    def test_renew_push_sends_expires(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(client, _push_update_response(updated={"sub1": None}))
+        client.renew_push("sub1", expires="2026-12-01T00:00:00Z")
+        update = captured["json"]["methodCalls"][0][1]["update"]
+        assert update == {"sub1": {"expires": "2026-12-01T00:00:00Z"}}
+
+    def test_renew_push_none_sends_explicit_null(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(client, _push_update_response(updated={"sub1": None}))
+        client.renew_push("sub1")
+        update = captured["json"]["methodCalls"][0][1]["update"]
+        assert update == {"sub1": {"expires": None}}
+
+    def test_renew_push_raises_on_not_updated(self, monkeypatch):
+        client = self._make_client()
+        resp = _push_update_response(notUpdated={"sub1": {"type": "notFound"}})
+        self._mock_http(client, response=self._make_mock(resp))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.renew_push("sub1")
+        assert exc_info.value.error_type == "notFound"
+
+    def test_unsubscribe_push_sends_destroy(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_client_for(client, _push_destroy_response(destroyed=["sub1"]))
+        client.unsubscribe_push("sub1")
+        assert captured["json"]["methodCalls"][0][1]["destroy"] == ["sub1"]
+
+    def test_unsubscribe_push_raises_on_not_destroyed(self, monkeypatch):
+        client = self._make_client()
+        resp = _push_destroy_response(notDestroyed={"sub1": {"type": "notFound"}})
+        self._mock_http(client, response=self._make_mock(resp))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.unsubscribe_push("sub1")
+        assert exc_info.value.error_type == "notFound"
+
+
 class TestJMAPClientCalendars(_MockedClientMixin):
     def _set_response(self, **kwargs):
         return _set_response("Calendar/set", "cal-set-create-0", **kwargs)
@@ -7002,6 +7223,160 @@ class TestAsyncJMAPClient:
         monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
         with pytest.raises(_http_requests.HTTPError):
             await client.search_contacts()
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_returns_id(self, monkeypatch):
+        client = self._make_client()
+        self._patch_async_session(
+            monkeypatch, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        sub_id = await client.subscribe_push("https://example.com/push", "device1")
+        assert sub_id == "sub1"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_sends_device_client_id_and_url(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        await client.subscribe_push("https://example.com/push", "device1")
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["deviceClientId"] == "device1"
+        assert created["url"] == "https://example.com/push"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_defaults_types_to_calendar_event(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        await client.subscribe_push("https://example.com/push", "device1")
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["types"] == ["CalendarEvent"]
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_passes_explicit_types(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        await client.subscribe_push(
+            "https://example.com/push", "device1", types=["Calendar", "Task"]
+        )
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["types"] == ["Calendar", "Task"]
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_empty_types_list_not_replaced_by_default(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        await client.subscribe_push("https://example.com/push", "device1", types=[])
+        created = captured["json"]["methodCalls"][0][1]["create"]["new-0"]
+        assert created["types"] == []
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_sends_only_core_capability(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        await client.subscribe_push("https://example.com/push", "device1")
+        assert captured["json"]["using"] == ["urn:ietf:params:jmap:core"]
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_never_sends_account_id(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_set_response(created={"new-0": {"id": "sub1"}})
+        )
+        await client.subscribe_push("https://example.com/push", "device1")
+        assert "accountId" not in captured["json"]["methodCalls"][0][1]
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_raises_on_not_created(self, monkeypatch):
+        client = self._make_client()
+        self._patch_async_session(
+            monkeypatch, _push_set_response(notCreated={"new-0": {"type": "invalidProperties"}})
+        )
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.subscribe_push("https://example.com/push", "device1")
+        assert exc_info.value.error_type == "invalidProperties"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_push_raises_unknown_method_when_unsupported(self, monkeypatch):
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, _push_error_response("unknownMethod"))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.subscribe_push("https://example.com/push", "device1")
+        assert exc_info.value.error_type == "unknownMethod"
+
+    @pytest.mark.asyncio
+    async def test_confirm_push_verification_sends_verification_code(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_update_response(updated={"sub1": None})
+        )
+        await client.confirm_push_verification("sub1", "code123")
+        update = captured["json"]["methodCalls"][0][1]["update"]
+        assert update == {"sub1": {"verificationCode": "code123"}}
+
+    @pytest.mark.asyncio
+    async def test_confirm_push_verification_raises_on_wrong_code(self, monkeypatch):
+        client = self._make_client()
+        resp = _push_update_response(notUpdated={"sub1": {"type": "invalidProperties"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.confirm_push_verification("sub1", "wrong-code")
+        assert exc_info.value.error_type == "invalidProperties"
+
+    @pytest.mark.asyncio
+    async def test_renew_push_sends_expires(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_update_response(updated={"sub1": None})
+        )
+        await client.renew_push("sub1", expires="2026-12-01T00:00:00Z")
+        update = captured["json"]["methodCalls"][0][1]["update"]
+        assert update == {"sub1": {"expires": "2026-12-01T00:00:00Z"}}
+
+    @pytest.mark.asyncio
+    async def test_renew_push_none_sends_explicit_null(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_update_response(updated={"sub1": None})
+        )
+        await client.renew_push("sub1")
+        update = captured["json"]["methodCalls"][0][1]["update"]
+        assert update == {"sub1": {"expires": None}}
+
+    @pytest.mark.asyncio
+    async def test_renew_push_raises_on_not_updated(self, monkeypatch):
+        client = self._make_client()
+        resp = _push_update_response(notUpdated={"sub1": {"type": "notFound"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.renew_push("sub1")
+        assert exc_info.value.error_type == "notFound"
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_push_sends_destroy(self, monkeypatch):
+        client = self._make_client()
+        captured = self._capturing_async_session_for(
+            monkeypatch, client, _push_destroy_response(destroyed=["sub1"])
+        )
+        await client.unsubscribe_push("sub1")
+        assert captured["json"]["methodCalls"][0][1]["destroy"] == ["sub1"]
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_push_raises_on_not_destroyed(self, monkeypatch):
+        client = self._make_client()
+        resp = _push_destroy_response(notDestroyed={"sub1": {"type": "notFound"}})
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await client.unsubscribe_push("sub1")
+        assert exc_info.value.error_type == "notFound"
 
     @pytest.mark.asyncio
     async def test_get_sync_token_sends_empty_ids(self, monkeypatch):
