@@ -30,7 +30,7 @@ except ImportError:
 from calendaring_jmap import AsyncJMAPClient, JMAPCalendarObject, JMAPClient
 from calendaring_jmap._http import requests
 from calendaring_jmap._methods import parse_set_response
-from calendaring_jmap.client import _CONTACTS_USING, _JMAPClientBase
+from calendaring_jmap.client import _CONTACTS_USING, _PUSH_USING, _JMAPClientBase
 from calendaring_jmap.constants import CALENDAR_CAPABILITY, CONTACTS_CAPABILITY
 from calendaring_jmap.convert import jscal_to_ical
 from calendaring_jmap.error import JMAPMethodError
@@ -1336,3 +1336,99 @@ class TestContactsIntegration:
                 assert contact.uid is not None
         finally:
             self._destroy_contact(event_client, contact_id)
+
+
+@_stalwart_skip
+class TestPushIntegration:
+    """Confirmed live that Cyrus does not implement PushSubscription/get or
+    /set at all (unknownMethod on both), so there is no Cyrus counterpart
+    to this class: nothing here is exercisable against that server.
+
+    The lifecycle tests below (create, renew, destroy) use a throwaway
+    ``https://`` URL that never actually receives the server's
+    PushVerification POST, since this test suite has no HTTP server of its
+    own to receive it. Confirmed live that Stalwart accepts the create
+    regardless and lets renew/destroy proceed on an unverified
+    subscription, so the create/renew/destroy lifecycle is fully
+    exercisable without completing verification.
+
+    The verification-handshake half (confirm_push_verification) needs a
+    real, publicly reachable HTTPS endpoint and is not run automatically;
+    see test_verification_handshake_manual below for how to run it by hand.
+    """
+
+    def test_subscribe_push_creates_subscription(self, stalwart_client):
+        subscription_id = stalwart_client.subscribe_push(
+            "https://example.invalid/push", "integration-test-device"
+        )
+        try:
+            assert subscription_id
+        finally:
+            stalwart_client.unsubscribe_push(subscription_id)
+
+    def test_subscribe_push_defaults_types_to_calendar_event(self, stalwart_client):
+        subscription_id = stalwart_client.subscribe_push(
+            "https://example.invalid/push", "integration-test-device"
+        )
+        try:
+            call = ("PushSubscription/get", {"ids": [subscription_id]}, "push-get-check-0")
+            responses = stalwart_client._request([call], using=_PUSH_USING)
+            (_, resp_args, _) = responses[0]
+            assert resp_args["list"][0]["types"] == ["CalendarEvent"]
+        finally:
+            stalwart_client.unsubscribe_push(subscription_id)
+
+    def test_renew_push_updates_expiry(self, stalwart_client):
+        subscription_id = stalwart_client.subscribe_push(
+            "https://example.invalid/push", "integration-test-device"
+        )
+        try:
+            # No assertion on the exact value: confirmed live that Stalwart
+            # caps this to its own server-defined maximum rather than
+            # honoring an arbitrary far-future request. Only confirms the
+            # call itself succeeds against a real, unverified subscription.
+            stalwart_client.renew_push(subscription_id, expires="2030-01-01T00:00:00Z")
+        finally:
+            stalwart_client.unsubscribe_push(subscription_id)
+
+    def test_confirm_push_verification_rejects_wrong_code(self, stalwart_client):
+        # Confirmed live that Stalwart rejects a wrong verificationCode
+        # with invalidProperties rather than silently ignoring it, even
+        # against a real, currently-unverified subscription.
+        subscription_id = stalwart_client.subscribe_push(
+            "https://example.invalid/push", "integration-test-device"
+        )
+        try:
+            with pytest.raises(JMAPMethodError) as exc_info:
+                stalwart_client.confirm_push_verification(subscription_id, "wrong-code")
+            assert exc_info.value.error_type == "invalidProperties"
+        finally:
+            stalwart_client.unsubscribe_push(subscription_id)
+
+    def test_unsubscribe_push_removes_subscription(self, stalwart_client):
+        subscription_id = stalwart_client.subscribe_push(
+            "https://example.invalid/push", "integration-test-device"
+        )
+        stalwart_client.unsubscribe_push(subscription_id)
+        call = ("PushSubscription/get", {"ids": [subscription_id]}, "push-get-check-0")
+        ((_, resp_args, _),) = stalwart_client._request([call], using=_PUSH_USING)
+        assert resp_args["notFound"] == [subscription_id]
+        assert resp_args["list"] == []
+
+    @pytest.mark.skip(
+        reason=(
+            "Needs a real, publicly reachable HTTPS endpoint to receive the "
+            "server's PushVerification POST; not runnable in CI. To run "
+            "manually: 1) start a public HTTPS tunnel to a local HTTP "
+            "listener (e.g. via a tunneling tool); 2) call "
+            "client.subscribe_push(<tunnel_url>, <device_id>); 3) read the "
+            "PushVerification JSON body your listener receives and extract "
+            "its verificationCode; 4) call "
+            "client.confirm_push_verification(subscription_id, "
+            "verification_code) with that code; 5) confirm the server "
+            "stops erroring and starts sending real StateChange "
+            "notifications to the same endpoint on further changes."
+        )
+    )
+    def test_verification_handshake_manual(self):
+        pass

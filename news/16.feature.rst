@@ -1,0 +1,1 @@
+Added ``subscribe_push``, ``confirm_push_verification``, ``renew_push``, and ``unsubscribe_push`` on both ``JMAPClient`` and ``AsyncJMAPClient``, for JMAP push subscriptions (:rfc:`8620#section-7.2`). The subscription's callback URL must be HTTPS and publicly reachable by the server; this will not work behind localhost without tunneling.

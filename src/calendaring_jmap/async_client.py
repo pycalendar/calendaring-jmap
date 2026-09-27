@@ -48,6 +48,12 @@ from calendaring_jmap._methods.event import (
     parse_event_set,
 )
 from calendaring_jmap._methods.principal import build_get_availability, parse_get_availability
+from calendaring_jmap._methods.push import (
+    build_push_subscription_set_create,
+    build_push_subscription_set_destroy,
+    build_push_subscription_set_update,
+    parse_push_subscription_set,
+)
 from calendaring_jmap._methods.task import (
     build_task_get,
     build_task_list_get,
@@ -60,6 +66,7 @@ from calendaring_jmap.client import (
     _CONTACTS_USING,
     _DEFAULT_USING,
     _PRINCIPALS_USING,
+    _PUSH_USING,
     _TASK_USING,
     _JMAPClientBase,
 )
@@ -848,6 +855,73 @@ class AsyncJMAPClient(_JMAPClientBase):
         calls = self._build_contact_search_calls(target_account, text, email)
         responses = await self._request(calls, using=_CONTACTS_USING)
         return self._parse_search_contacts_response(responses)
+
+    async def subscribe_push(
+        self,
+        callback_url: str,
+        device_client_id: str,
+        types: list[str] | None = None,
+    ) -> str:
+        """Register a push subscription.
+
+        See :meth:`JMAPClient.subscribe_push` for the full semantics,
+        including why this client cannot complete the verification
+        handshake by itself.
+        """
+        if types is None:
+            types = ["CalendarEvent"]
+        session = await self._get_session()
+        call = build_push_subscription_set_create(device_client_id, callback_url, types)
+        responses = await self._request([call], using=_PUSH_USING)
+        return self._parse_create_response(
+            responses, session.api_url, "PushSubscription/set", parse_push_subscription_set
+        )
+
+    async def _update_push_subscription(self, subscription_id: str, patch: dict) -> None:
+        """Shared implementation for :meth:`confirm_push_verification` and
+        :meth:`renew_push`. See :meth:`JMAPClient._update_push_subscription`."""
+        session = await self._get_session()
+        call = build_push_subscription_set_update(subscription_id, patch)
+        responses = await self._request([call], using=_PUSH_USING)
+        self._parse_update_response(
+            responses,
+            session.api_url,
+            "PushSubscription/set",
+            parse_push_subscription_set,
+            subscription_id,
+        )
+
+    async def confirm_push_verification(self, subscription_id: str, verification_code: str) -> None:
+        """Submit the verification code the server POSTed to ``callback_url``.
+
+        See :meth:`JMAPClient.confirm_push_verification` for the full semantics.
+        """
+        await self._update_push_subscription(
+            subscription_id, {"verificationCode": verification_code}
+        )
+
+    async def renew_push(self, subscription_id: str, expires: str | None = None) -> None:
+        """Extend (or shorten) a push subscription's expiry.
+
+        See :meth:`JMAPClient.renew_push` for the full semantics.
+        """
+        await self._update_push_subscription(subscription_id, {"expires": expires})
+
+    async def unsubscribe_push(self, subscription_id: str) -> None:
+        """Destroy a push subscription.
+
+        See :meth:`JMAPClient.unsubscribe_push` for the full semantics.
+        """
+        session = await self._get_session()
+        call = build_push_subscription_set_destroy(subscription_id)
+        responses = await self._request([call], using=_PUSH_USING)
+        self._parse_delete_response(
+            responses,
+            session.api_url,
+            "PushSubscription/set",
+            parse_push_subscription_set,
+            subscription_id,
+        )
 
     async def get_sync_token(self) -> str:
         """Return the current CalendarEvent state string for use as a sync token.
