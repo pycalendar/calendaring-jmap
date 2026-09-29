@@ -1,0 +1,1 @@
+Added ``has_attachment``, ``participant_email``, ``participation_status``, and ``participant_role`` filters to ``search_events`` on both ``JMAPClient`` and ``AsyncJMAPClient``, plus ``JMAPCalendar.search``. None of these have a matching ``FilterCondition`` property, so they filter client-side against the events the server's existing filters already matched, not on the server.

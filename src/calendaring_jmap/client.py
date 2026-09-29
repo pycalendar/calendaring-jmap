@@ -71,6 +71,7 @@ from calendaring_jmap.constants import (
     LINK_REL_ENCLOSURE,
     PARTICIPATION_STATUS_ACCEPTED,
     PARTICIPATION_STATUS_DECLINED,
+    PARTICIPATION_STATUS_NEEDS_ACTION,
     PARTICIPATION_STATUS_TENTATIVE,
     PRINCIPALS_CAPABILITY,
     TASK_CAPABILITY,
@@ -304,6 +305,62 @@ class _JMAPClientBase:
         query_call = build_event_query(account_id, filter_condition=filter_condition)
         get_call = build_event_get_by_query_result(account_id)
         return [query_call, get_call]
+
+    @staticmethod
+    def _event_matches_search_filters(
+        event_data: dict,
+        has_attachment: bool | None,
+        participant_email: str | None,
+        participation_status: str | None,
+        participant_role: str | None,
+    ) -> bool:
+        """Return whether ``event_data`` (a raw JSCalendar CalendarEvent dict)
+        passes every client-side filter that was actually requested.
+
+        None of these four properties exist on ``FilterCondition``
+        (draft-ietf-jmap-calendars-29 section 5.11.1 lists exactly
+        ``inCalendar``, ``after``, ``before``, ``text``, ``title``,
+        ``description``, ``location``, ``owner``, ``attendee``, ``uid``), so
+        unlike :meth:`_build_event_search_calls`'s own filters, these run in
+        Python against the already-fetched event, not on the server.
+        A ``None`` argument is not checked at all, matching
+        ``FilterCondition``'s own "zero properties specified means the
+        condition is always true" rule for the properties this client
+        evaluates server-side.
+
+        The three participant-based filters (``participant_email``,
+        ``participation_status``, ``participant_role``) are each evaluated
+        independently across every participant on the event, not required to
+        be satisfied by the same participant: an event where one participant
+        matches ``participant_email`` and a different participant matches
+        ``participant_role`` still matches both conditions.
+
+        Confirmed live that Cyrus drops a Link's ``rel: "enclosure"`` on
+        read-back, so ``has_attachment=True`` undercounts real attachments
+        there. Confirmed live that both Cyrus and Stalwart drop the
+        ``attendee`` role from a participant's ``roles`` map, so
+        ``participant_role="attendee"`` undercounts on both servers.
+        """
+        if has_attachment is not None:
+            links = (event_data.get("links") or {}).values()
+            found = any(JMAPAttachment.is_attachment(link) for link in links)
+            if found != has_attachment:
+                return False
+        participants = (event_data.get("participants") or {}).values()
+        if participant_email is not None and not any(
+            _JMAPClientBase._participant_matches_email(p, participant_email) for p in participants
+        ):
+            return False
+        if participation_status is not None and not any(
+            p.get("participationStatus", PARTICIPATION_STATUS_NEEDS_ACTION) == participation_status
+            for p in participants
+        ):
+            return False
+        if participant_role is not None and not any(
+            p.get("roles", {}).get(participant_role) is True for p in participants
+        ):
+            return False
+        return True
 
     @staticmethod
     def _build_availability_fallback_calls(account_id: str, start: str, end: str) -> list[tuple]:
@@ -559,12 +616,10 @@ class _JMAPClientBase:
         raise _JMAPClientBase._no_set_response_error(api_url, set_method)
 
     @staticmethod
-    def _find_participant_id_by_email(
-        participants: dict, own_email: str, api_url: str, event_id: str
-    ) -> str:
-        """Return the id of the entry in ``participants`` whose email is ``own_email``.
+    def _participant_matches_email(participant: dict, email: str) -> bool:
+        """Return whether ``participant`` matches ``email``.
 
-        Matching is a case-insensitive comparison against each participant's
+        Matching is a case-insensitive comparison against the participant's
         ``email`` property, falling back to ``calendarAddress`` (stripping a
         leading ``mailto:``) for a participant with no ``email`` set. JMAP
         Calendars itself matches by ``ParticipantIdentity.calendarAddress``,
@@ -573,17 +628,31 @@ class _JMAPClientBase:
         covers a spec-compliant server, or another client's participant,
         that only ever set ``calendarAddress``.
 
+        Shared by :meth:`_find_participant_id_by_email` (which scans a whole
+        ``participants`` dict for the caller's own participant id) and
+        :meth:`_event_matches_search_filters` (which uses this per-participant
+        check directly as a filter predicate).
+        """
+        candidate = participant.get("email") or participant.get("calendarAddress") or ""
+        candidate = candidate.removeprefix("mailto:")
+        return candidate.lower() == email.lower()
+
+    @staticmethod
+    def _find_participant_id_by_email(
+        participants: dict, own_email: str, api_url: str, event_id: str
+    ) -> str:
+        """Return the id of the entry in ``participants`` whose email is ``own_email``.
+
+        See :meth:`_participant_matches_email` for the matching rule.
+
         Shared by :meth:`JMAPClient._find_own_participant_id` and
         :meth:`AsyncJMAPClient._find_own_participant_id`.
 
         Raises:
             JMAPMethodError: If no participant matches ``own_email``.
         """
-        target = own_email.lower()
         for participant_id, participant in participants.items():
-            email = participant.get("email") or participant.get("calendarAddress") or ""
-            email = email.removeprefix("mailto:")
-            if email.lower() == target:
+            if _JMAPClientBase._participant_matches_email(participant, own_email):
                 return participant_id
         raise JMAPMethodError(
             url=api_url,
@@ -1527,6 +1596,10 @@ class JMAPClient(_JMAPClientBase):
         start: str | None = None,
         end: str | None = None,
         text: str | None = None,
+        has_attachment: bool | None = None,
+        participant_email: str | None = None,
+        participation_status: str | None = None,
+        participant_role: str | None = None,
         parent: JMAPCalendar | None = None,
         account_id: str | None = None,
     ) -> list[JMAPCalendarObject]:
@@ -1539,7 +1612,23 @@ class JMAPClient(_JMAPClientBase):
             text,
         )
         responses = self._request(calls)
-        return self._parse_search_response(responses, parent)
+        results = self._parse_search_response(responses, parent)
+        if any(
+            v is not None
+            for v in (has_attachment, participant_email, participation_status, participant_role)
+        ):
+            results = [
+                r
+                for r in results
+                if self._event_matches_search_filters(
+                    r.get_data(),
+                    has_attachment,
+                    participant_email,
+                    participation_status,
+                    participant_role,
+                )
+            ]
+        return results
 
     def search_events(
         self,
@@ -1547,6 +1636,10 @@ class JMAPClient(_JMAPClientBase):
         start: str | None = None,
         end: str | None = None,
         text: str | None = None,
+        has_attachment: bool | None = None,
+        participant_email: str | None = None,
+        participation_status: str | None = None,
+        participant_role: str | None = None,
         account_id: str | None = None,
     ) -> list[JMAPCalendarObject]:
         """Search for calendar events.
@@ -1555,11 +1648,44 @@ class JMAPClient(_JMAPClientBase):
         Results are fetched in a single batched JMAP request using a result reference
         from ``CalendarEvent/query`` into ``CalendarEvent/get``.
 
+        ``has_attachment``, ``participant_email``, ``participation_status``,
+        and ``participant_role`` have no corresponding ``FilterCondition``
+        property (draft-ietf-jmap-calendars-29 section 5.11.1); they filter
+        client-side, in Python, against every event the server-side filters
+        above already matched, not on the server itself. All filters
+        combine as AND, matching ``FilterCondition``'s own "all must apply"
+        rule, but the three participant-based filters are each satisfied
+        independently across an event's participants: an event where one
+        participant matches ``participant_email`` and a different
+        participant matches ``participant_role`` still matches both.
+
+        Confirmed live that Cyrus drops a Link's ``rel: "enclosure"`` on
+        read-back, so ``has_attachment=True`` misses real attachments there.
+        Confirmed live that both Cyrus and Stalwart drop the ``attendee``
+        role from a participant's ``roles`` map, so
+        ``participant_role="attendee"`` misses matches on both servers.
+
         Args:
             calendar_id: Limit results to this calendar.
             start: Only events ending after this datetime (``YYYY-MM-DDTHH:MM:SS``).
             end: Only events starting before this datetime (``YYYY-MM-DDTHH:MM:SS``).
             text: Free-text search across title, description, locations, and participants.
+            has_attachment: Only events with (``True``) or without
+                (``False``) at least one attachment Link
+                (:meth:`~calendaring_jmap.objects.attachment.JMAPAttachment.is_attachment`).
+            participant_email: Only events with a participant matching this
+                email (case-insensitive, falling back to ``calendarAddress``;
+                see :meth:`_participant_matches_email` for the matching
+                rule). Matches against a participant's
+                ``email``/``calendarAddress`` property, never
+                ``participantId`` (a server-assigned id with no email
+                semantics), so no separate contacts lookup is needed to
+                resolve a name to an email before calling this.
+            participation_status: Only events with a participant whose
+                ``participationStatus`` equals this value, defaulting an
+                absent value to ``"needs-action"`` per :rfc:`8984#section-4.4.6`.
+            participant_role: Only events with a participant whose ``roles``
+                map has this key set to ``True``.
             account_id: Pass a different account here to search a calendar
                 shared with you.
 
@@ -1571,7 +1697,15 @@ class JMAPClient(_JMAPClientBase):
             set.
         """
         return self._search(
-            calendar_id=calendar_id, start=start, end=end, text=text, account_id=account_id
+            calendar_id=calendar_id,
+            start=start,
+            end=end,
+            text=text,
+            has_attachment=has_attachment,
+            participant_email=participant_email,
+            participation_status=participation_status,
+            participant_role=participant_role,
+            account_id=account_id,
         )
 
     def get_availability(

@@ -728,6 +728,10 @@ class AsyncJMAPClient(_JMAPClientBase):
         start: str | None = None,
         end: str | None = None,
         text: str | None = None,
+        has_attachment: bool | None = None,
+        participant_email: str | None = None,
+        participation_status: str | None = None,
+        participant_role: str | None = None,
         parent: JMAPCalendar | None = None,
         account_id: str | None = None,
     ) -> list[JMAPCalendarObject]:
@@ -740,7 +744,23 @@ class AsyncJMAPClient(_JMAPClientBase):
             text,
         )
         responses = await self._request(calls)
-        return self._parse_search_response(responses, parent)
+        results = self._parse_search_response(responses, parent)
+        if any(
+            v is not None
+            for v in (has_attachment, participant_email, participation_status, participant_role)
+        ):
+            results = [
+                r
+                for r in results
+                if self._event_matches_search_filters(
+                    r.get_data(),
+                    has_attachment,
+                    participant_email,
+                    participation_status,
+                    participant_role,
+                )
+            ]
+        return results
 
     async def search_events(
         self,
@@ -748,29 +768,29 @@ class AsyncJMAPClient(_JMAPClientBase):
         start: str | None = None,
         end: str | None = None,
         text: str | None = None,
+        has_attachment: bool | None = None,
+        participant_email: str | None = None,
+        participation_status: str | None = None,
+        participant_role: str | None = None,
         account_id: str | None = None,
     ) -> list[JMAPCalendarObject]:
         """Search for calendar events.
 
-        All parameters are optional; omitting all returns every event in the account.
-        Results are fetched in a single batched JMAP request using a result reference
-        from ``CalendarEvent/query`` into ``CalendarEvent/get``.
-
-        Args:
-            calendar_id: Limit results to this calendar.
-            start: Only events ending after this datetime (``YYYY-MM-DDTHH:MM:SS``).
-            end: Only events starting before this datetime (``YYYY-MM-DDTHH:MM:SS``).
-            text: Free-text search across title, description, locations, and participants.
-            account_id: Pass a different account here to search a calendar
-                shared with you.
-
-        Returns:
-            List of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
-            instances.  ``parent`` is ``None`` on these objects; use
-            :meth:`JMAPCalendar.search` if you need ``parent`` set.
+        See :meth:`JMAPClient.search_events` for the full semantics,
+        including why ``has_attachment``/``participant_email``/
+        ``participation_status``/``participant_role`` filter client-side and
+        their confirmed server-specific false-negatives.
         """
         return await self._search(
-            calendar_id=calendar_id, start=start, end=end, text=text, account_id=account_id
+            calendar_id=calendar_id,
+            start=start,
+            end=end,
+            text=text,
+            has_attachment=has_attachment,
+            participant_email=participant_email,
+            participation_status=participation_status,
+            participant_role=participant_role,
+            account_id=account_id,
         )
 
     async def get_availability(

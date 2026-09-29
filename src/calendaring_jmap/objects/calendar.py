@@ -206,6 +206,10 @@ class JMAPCalendar(Generic[_M]):
           (maps to JMAP ``before`` filter).
         - ``text`` (str): free-text search across title, description,
           locations, and participants.
+        - ``has_attachment`` (bool): see :meth:`JMAPClient.search_events`.
+        - ``participant_email`` (str): see :meth:`JMAPClient.search_events`.
+        - ``participation_status`` (str): see :meth:`JMAPClient.search_events`.
+        - ``participant_role`` (str): see :meth:`JMAPClient.search_events`.
 
         Returns:
             List of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
@@ -219,6 +223,10 @@ class JMAPCalendar(Generic[_M]):
             start=start,
             end=end,
             text=searchargs.get("text"),
+            has_attachment=searchargs.get("has_attachment"),
+            participant_email=searchargs.get("participant_email"),
+            participation_status=searchargs.get("participation_status"),
+            participant_role=searchargs.get("participant_role"),
             parent=self,
             account_id=self._account_id,
         )
@@ -232,6 +240,10 @@ class JMAPCalendar(Generic[_M]):
             start=start,
             end=end,
             text=searchargs.get("text"),
+            has_attachment=searchargs.get("has_attachment"),
+            participant_email=searchargs.get("participant_email"),
+            participation_status=searchargs.get("participation_status"),
+            participant_role=searchargs.get("participant_role"),
             parent=self,
             account_id=self._account_id,
         )

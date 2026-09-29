@@ -132,11 +132,24 @@ def _invite_ical(
     attendee_email: str,
     title: str = "Scheduling Test Event",
     start: datetime | None = None,
+    role: str = "REQ-PARTICIPANT",
+    partstat: str = "NEEDS-ACTION",
 ) -> str:
+    """``role``/``partstat`` default to REQ-PARTICIPANT/NEEDS-ACTION, mapping
+    to ``roles: {"attendee": true}``, confirmed live to be dropped by both
+    Cyrus and Stalwart. Pass ``role="CHAIR"`` for a role that survives on
+    both servers instead."""
     extra_lines = (
         f"ORGANIZER:mailto:{organizer_email}\r\n"
-        f"ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{attendee_email}\r\n"
+        f"ATTENDEE;ROLE={role};PARTSTAT={partstat};RSVP=TRUE:mailto:{attendee_email}\r\n"
     )
+    return _vevent_ical(title, start or _DEFAULT_ICAL_START, timedelta(hours=1), extra_lines)
+
+
+def _attachment_ical(
+    title: str = "Attachment Search Filter Test", start: datetime | None = None
+) -> str:
+    extra_lines = "ATTACH:https://example.com/doc.pdf\r\n"
     return _vevent_ical(title, start or _DEFAULT_ICAL_START, timedelta(hours=1), extra_lines)
 
 
@@ -1432,3 +1445,122 @@ class TestPushIntegration:
     )
     def test_verification_handshake_manual(self):
         pass
+
+
+@_sync_servers
+class TestRicherEventSearchIntegration:
+    """has_attachment/participant_email/participation_status/participant_role
+    filter client-side (draft-ietf-jmap-calendars-29 section 5.11.1 has no
+    FilterCondition property for any of them), so every test here creates a
+    real event via the public create_event API (exercising the real
+    ical_to_jscal conversion, not a hand-built raw JMAP dict) and asserts on
+    search_events's returned results.
+
+    Confirmed live that both Cyrus and Stalwart drop the "attendee" role
+    from a participant's roles map, so participant_role="attendee" itself
+    is not directly testable here; _invite_ical(role="CHAIR") is used
+    instead, which survives on both servers, and
+    test_participant_role_attendee_confirmed_dropped locks in the known
+    "attendee" gap explicitly rather than skipping it silently.
+
+    ical_to_jscal always sets roles: {"attendee": true} on every ATTENDEE
+    line and only adds chair: true on top of that for ROLE=CHAIR, never in
+    place of it (confirmed live: a ROLE=CHAIR participant's roles ends up
+    {"chair": true, "attendee": true}, not {"chair": true} alone). Since
+    both servers drop attendee specifically but keep chair,
+    participant_role="chair" still finds this participant correctly, but
+    participant_role="attendee" also finds them here, unlike an event
+    seeded through _invite_ical's own REQ-PARTICIPANT default, where the
+    attendee-only participant's roles is dropped to nothing.
+    """
+
+    def test_has_attachment_true_finds_event_with_attachment(
+        self, event_client, event_calendar_id, server
+    ):
+        event_id = event_client.create_event(event_calendar_id, _attachment_ical())
+        try:
+            results = event_client.search_events(calendar_id=event_calendar_id, has_attachment=True)
+            matched = any(r.id == event_id for r in results)
+            if server == "cyrus":
+                # Confirmed live: Cyrus drops rel: "enclosure" on read-back,
+                # so has_attachment=True cannot find this event there.
+                assert not matched, (
+                    f"{server}: expected has_attachment=True to miss this event "
+                    "(known rel: enclosure drop); it matched instead, meaning "
+                    "the Cyrus bug this test documents may have been fixed."
+                )
+            else:
+                assert matched, f"{server}: has_attachment=True did not find the event."
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_has_attachment_false_excludes_event_with_attachment_on_stalwart(
+        self, event_client, event_calendar_id, server
+    ):
+        if server == "cyrus":
+            pytest.skip("Cyrus drops rel: enclosure, so this event never registers as attached")
+        event_id = event_client.create_event(event_calendar_id, _attachment_ical())
+        try:
+            results = event_client.search_events(
+                calendar_id=event_calendar_id, has_attachment=False
+            )
+            assert not any(r.id == event_id for r in results)
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_chair_participant_matches_email_status_and_role_filters(
+        self, event_client, event_calendar_id, owner_email, server
+    ):
+        """One CHAIR/ACCEPTED participant, so a single seeded event
+        exercises participant_email, participation_status, and
+        participant_role together instead of three near-identical
+        create/search/delete sequences."""
+        chair_email = "chair-filter-test@example.com"
+        event_id = event_client.create_event(
+            event_calendar_id,
+            _invite_ical(owner_email, chair_email, role="CHAIR", partstat="ACCEPTED"),
+        )
+        try:
+            by_email = event_client.search_events(
+                calendar_id=event_calendar_id, participant_email=chair_email
+            )
+            assert any(r.id == event_id for r in by_email), (
+                f"{server}: participant_email did not find the seeded participant."
+            )
+            by_status = event_client.search_events(
+                calendar_id=event_calendar_id, participation_status="accepted"
+            )
+            assert any(r.id == event_id for r in by_status), (
+                f"{server}: participation_status did not find the seeded participant."
+            )
+            by_role = event_client.search_events(
+                calendar_id=event_calendar_id, participant_role="chair"
+            )
+            assert any(r.id == event_id for r in by_role), (
+                f"{server}: participant_role='chair' did not find the seeded participant."
+            )
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_participant_role_attendee_confirmed_dropped(
+        self, event_client, event_calendar_id, owner_email, server
+    ):
+        """Locks in the confirmed-live finding that both Cyrus and Stalwart
+        drop the "attendee" role from a participant's roles map: this
+        assertion should start failing, not silently pass, the day either
+        server stops doing that."""
+        attendee_email = "attendee-role-gap-test@example.com"
+        event_id = event_client.create_event(
+            event_calendar_id, _invite_ical(owner_email, attendee_email)
+        )
+        try:
+            results = event_client.search_events(
+                calendar_id=event_calendar_id, participant_role="attendee"
+            )
+            assert not any(r.id == event_id for r in results), (
+                f"{server}: participant_role='attendee' matched the seeded "
+                "participant; the confirmed-live role-drop bug this test "
+                "documents may have been fixed server-side."
+            )
+        finally:
+            event_client.delete_event(event_id)
