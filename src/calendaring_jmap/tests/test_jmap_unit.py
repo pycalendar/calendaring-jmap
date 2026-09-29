@@ -769,6 +769,27 @@ class TestJMAPCalendar:
         query_args = captured["json"]["methodCalls"][0][1]
         assert query_args["filter"]["text"] == "standup"
 
+    def test_calendar_search_forwards_has_attachment(self, monkeypatch):
+        # has_attachment filters client-side (no FilterCondition property for
+        # it), so this asserts on the returned results, not the captured
+        # request, unlike the server-side filters above.
+        with_link = {**self._RAW_EVENT, "links": {"l1": {"rel": "enclosure"}}}
+        without_link = {**self._RAW_EVENT, "id": "ev2"}
+        resp = _query_get_response([with_link, without_link])
+        cal = _make_calendar_with_client(monkeypatch, resp)
+        results = cal.search(has_attachment=True)
+        assert [r.id for r in results] == [with_link["id"]]
+
+    def test_calendar_search_forwards_participant_role(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "roles": {"chair": True}}},
+        }
+        resp = _query_get_response([event])
+        cal = _make_calendar_with_client(monkeypatch, resp)
+        results = cal.search(participant_role="chair")
+        assert len(results) == 1
+
     def test_calendar_get_object_by_uid_found(self, monkeypatch):
         resp = _query_get_response([self._RAW_EVENT])
         cal = _make_calendar_with_client(monkeypatch, resp)
@@ -849,6 +870,28 @@ class TestJMAPCalendar:
         call_kwargs = mock_client._search.call_args.kwargs
         assert call_kwargs["start"] == "2026-06-01T12:00:00"
         assert call_kwargs["end"] == "2026-06-02T12:00:00"
+
+    def test_calendar_search_async_forwards_client_side_filters(self):
+        mock_client = MagicMock()
+        mock_client._search = AsyncMock(return_value=[])
+        cal: JMAPCalendar[Literal[True]] = JMAPCalendar(id="cal1", name="Test")
+        cal._client = mock_client
+        cal._is_async = True
+        import asyncio
+
+        asyncio.run(
+            cal.search(
+                has_attachment=True,
+                participant_email="alice@example.com",
+                participation_status="accepted",
+                participant_role="chair",
+            )
+        )
+        call_kwargs = mock_client._search.call_args.kwargs
+        assert call_kwargs["has_attachment"] is True
+        assert call_kwargs["participant_email"] == "alice@example.com"
+        assert call_kwargs["participation_status"] == "accepted"
+        assert call_kwargs["participant_role"] == "chair"
 
     def test_calendar_get_object_by_uid_dispatches_to_async_when_async_backed(self):
         mock_client = MagicMock()
@@ -1894,6 +1937,62 @@ class TestJMAPClientBaseParsers:
         assert client._session_cache is fetched
         client._get_session()
         mock_fetch.assert_called_once()
+
+
+class TestEventSearchFilters:
+    """Direct unit tests for the two static helpers search_events's
+    client-side filters are built on, independent of the search_events
+    request/response plumbing tested in TestJMAPClientEvents."""
+
+    def test_participant_matches_email_via_email_field(self):
+        participant = {"email": "alice@example.com"}
+        assert _JMAPClientBase._participant_matches_email(participant, "alice@example.com")
+
+    def test_participant_matches_email_case_insensitively(self):
+        participant = {"email": "Alice@Example.com"}
+        assert _JMAPClientBase._participant_matches_email(participant, "alice@example.com")
+
+    def test_participant_matches_email_falls_back_to_calendar_address(self):
+        participant = {"calendarAddress": "mailto:alice@example.com"}
+        assert _JMAPClientBase._participant_matches_email(participant, "alice@example.com")
+
+    def test_participant_matches_email_no_match(self):
+        participant = {"email": "alice@example.com"}
+        assert not _JMAPClientBase._participant_matches_email(participant, "bob@example.com")
+
+    def test_participant_matches_email_no_email_or_calendar_address(self):
+        assert not _JMAPClientBase._participant_matches_email({}, "alice@example.com")
+
+    def test_event_matches_search_filters_true_when_all_args_none(self):
+        assert _JMAPClientBase._event_matches_search_filters({}, None, None, None, None)
+
+    def test_event_matches_search_filters_has_attachment(self):
+        event = {"links": {"l1": {"rel": "enclosure"}}}
+        assert _JMAPClientBase._event_matches_search_filters(event, True, None, None, None)
+        assert not _JMAPClientBase._event_matches_search_filters(event, False, None, None, None)
+
+    def test_event_matches_search_filters_participant_role_requires_true(self):
+        event = {"participants": {"p1": {"roles": {"chair": False}}}}
+        assert not _JMAPClientBase._event_matches_search_filters(event, None, None, None, "chair")
+
+    def test_event_matches_search_filters_participant_email(self):
+        event = {"participants": {"p1": {"email": "alice@example.com"}}}
+        assert _JMAPClientBase._event_matches_search_filters(
+            event, None, "alice@example.com", None, None
+        )
+        assert not _JMAPClientBase._event_matches_search_filters(
+            event, None, "bob@example.com", None, None
+        )
+
+    def test_event_matches_search_filters_participation_status_default(self):
+        # No participationStatus set at all: defaults to needs-action.
+        event = {"participants": {"p1": {}}}
+        assert _JMAPClientBase._event_matches_search_filters(
+            event, None, None, "needs-action", None
+        )
+        assert not _JMAPClientBase._event_matches_search_filters(
+            event, None, None, "accepted", None
+        )
 
 
 from calendaring_jmap import get_jmap_client
@@ -4618,6 +4717,133 @@ class TestJMAPClientEvents(_MockedClientMixin):
         query_args = captured["json"]["methodCalls"][0][1]
         assert "filter" not in query_args
 
+    def test_search_events_has_attachment_true_keeps_matching(self, monkeypatch):
+        with_link = {**self._RAW_EVENT, "links": {"l1": {"rel": "enclosure"}}}
+        without_link = {**self._RAW_EVENT, "id": "ev2"}
+        resp = _query_get_response([with_link, without_link])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(has_attachment=True)
+        assert [r.id for r in results] == [with_link["id"]]
+
+    def test_search_events_has_attachment_false_keeps_non_matching(self, monkeypatch):
+        with_link = {**self._RAW_EVENT, "links": {"l1": {"rel": "enclosure"}}}
+        without_link = {**self._RAW_EVENT, "id": "ev2"}
+        resp = _query_get_response([with_link, without_link])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(has_attachment=False)
+        assert [r.id for r in results] == [without_link["id"]]
+
+    def test_search_events_has_attachment_ignores_non_enclosure_links(self, monkeypatch):
+        # A Link with a different rel (e.g. a conference URL) isn't an
+        # attachment; see JMAPAttachment.is_attachment.
+        event = {**self._RAW_EVENT, "links": {"l1": {"rel": "describedby"}}}
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert client.search_events(has_attachment=True) == []
+
+    def test_search_events_participant_email_matches_email_field(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participant_email="alice@example.com")
+        assert len(results) == 1
+
+    def test_search_events_participant_email_matches_case_insensitively(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participant_email="ALICE@EXAMPLE.COM")
+        assert len(results) == 1
+
+    def test_search_events_participant_email_falls_back_to_calendar_address(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {
+                "p1": {"@type": "Participant", "calendarAddress": "mailto:alice@example.com"}
+            },
+        }
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participant_email="alice@example.com")
+        assert len(results) == 1
+
+    def test_search_events_participant_email_no_match(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert client.search_events(participant_email="nobody@example.com") == []
+
+    def test_search_events_participation_status_matches_explicit_value(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "participationStatus": "accepted"}},
+        }
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participation_status="accepted")
+        assert len(results) == 1
+
+    def test_search_events_participation_status_defaults_absent_to_needs_action(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant"}},
+        }
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participation_status="needs-action")
+        assert len(results) == 1
+
+    def test_search_events_participant_role_matches_true_role(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "roles": {"chair": True}}},
+        }
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participant_role="chair")
+        assert len(results) == 1
+
+    def test_search_events_participant_role_no_match_when_absent(self, monkeypatch):
+        event = {**self._RAW_EVENT, "participants": {"p1": {"@type": "Participant"}}}
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert client.search_events(participant_role="chair") == []
+
+    def test_search_events_participant_role_no_match_when_false(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "roles": {"chair": False}}},
+        }
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert client.search_events(participant_role="chair") == []
+
+    def test_search_events_combines_client_side_filters_as_and(self, monkeypatch):
+        # Passes participant_email but fails has_attachment: excluded.
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(participant_email="alice@example.com", has_attachment=True)
+        assert results == []
+
+    def test_search_events_participant_filters_need_not_share_a_participant(self, monkeypatch):
+        # alice is an attendee, the organizer is the owner: participant_email
+        # and participant_role are each satisfied by a different participant.
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        resp = _query_get_response([event])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        results = client.search_events(
+            participant_email="alice@example.com", participant_role="owner"
+        )
+        assert len(results) == 1
+
+    def test_search_events_no_client_side_filtering_when_all_omitted(self, monkeypatch):
+        # No has_attachment/participant_* args at all: the filtering step is
+        # skipped entirely, not just a no-op pass on every result.
+        resp = _query_get_response([self._RAW_EVENT])
+        client = _make_client_with_mocked_session(monkeypatch, resp)
+        assert len(client.search_events()) == 1
+
 
 class _MockedBlobClientMixin:
     """Shared client/response mocking for the raw-HTTP blob upload/download
@@ -6817,6 +7043,149 @@ class TestAsyncJMAPClient:
         await client.search_events()
         query_args = captured["json"]["methodCalls"][0][1]
         assert "filter" not in query_args
+
+    @pytest.mark.asyncio
+    async def test_search_events_has_attachment_true_keeps_matching(self, monkeypatch):
+        with_link = {**self._RAW_EVENT, "links": {"l1": {"rel": "enclosure"}}}
+        without_link = {**self._RAW_EVENT, "id": "ev-async-2"}
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([with_link, without_link]))
+        results = await client.search_events(has_attachment=True)
+        assert [r.id for r in results] == [with_link["id"]]
+
+    @pytest.mark.asyncio
+    async def test_search_events_has_attachment_false_keeps_non_matching(self, monkeypatch):
+        with_link = {**self._RAW_EVENT, "links": {"l1": {"rel": "enclosure"}}}
+        without_link = {**self._RAW_EVENT, "id": "ev-async-2"}
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([with_link, without_link]))
+        results = await client.search_events(has_attachment=False)
+        assert [r.id for r in results] == [without_link["id"]]
+
+    @pytest.mark.asyncio
+    async def test_search_events_has_attachment_ignores_non_enclosure_links(self, monkeypatch):
+        event = {**self._RAW_EVENT, "links": {"l1": {"rel": "describedby"}}}
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        assert await client.search_events(has_attachment=True) == []
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_email_matches_email_field(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(participant_email="alice@example.com")
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_email_matches_case_insensitively(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(participant_email="ALICE@EXAMPLE.COM")
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_email_falls_back_to_calendar_address(
+        self, monkeypatch
+    ):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {
+                "p1": {"@type": "Participant", "calendarAddress": "mailto:alice@example.com"}
+            },
+        }
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(participant_email="alice@example.com")
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_email_no_match(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        assert await client.search_events(participant_email="nobody@example.com") == []
+
+    @pytest.mark.asyncio
+    async def test_search_events_participation_status_matches_explicit_value(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "participationStatus": "accepted"}},
+        }
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(participation_status="accepted")
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_participation_status_defaults_absent_to_needs_action(
+        self, monkeypatch
+    ):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant"}},
+        }
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(participation_status="needs-action")
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_role_matches_true_role(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "roles": {"chair": True}}},
+        }
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(participant_role="chair")
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_role_no_match_when_absent(self, monkeypatch):
+        event = {**self._RAW_EVENT, "participants": {"p1": {"@type": "Participant"}}}
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        assert await client.search_events(participant_role="chair") == []
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_role_no_match_when_false(self, monkeypatch):
+        event = {
+            **self._RAW_EVENT,
+            "participants": {"p1": {"@type": "Participant", "roles": {"chair": False}}},
+        }
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        assert await client.search_events(participant_role="chair") == []
+
+    @pytest.mark.asyncio
+    async def test_search_events_combines_client_side_filters_as_and(self, monkeypatch):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(
+            participant_email="alice@example.com", has_attachment=True
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_events_participant_filters_need_not_share_a_participant(
+        self, monkeypatch
+    ):
+        event = _participant_event(self._RAW_EVENT, own_email="alice@example.com")
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([event]))
+        results = await client.search_events(
+            participant_email="alice@example.com", participant_role="owner"
+        )
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_events_no_client_side_filtering_when_all_omitted(self, monkeypatch):
+        client = self._make_client()
+        self._patch_async_session(monkeypatch, self._query_get_resp([self._RAW_EVENT]))
+        assert len(await client.search_events()) == 1
 
     _PRINCIPALS_CAPS = {"urn:ietf:params:jmap:principals": {"currentUserPrincipalId": "user1"}}
 
