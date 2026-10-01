@@ -55,11 +55,16 @@ from calendaring_jmap._methods.push import (
     parse_push_subscription_set,
 )
 from calendaring_jmap._methods.task import (
+    build_task_changes,
     build_task_get,
+    build_task_get_by_query_result,
     build_task_list_get,
+    build_task_query,
     build_task_set_create,
     build_task_set_destroy,
     build_task_set_update,
+    parse_task_changes,
+    parse_task_get,
     parse_task_list_get,
     parse_task_set,
 )
@@ -704,17 +709,38 @@ class _JMAPClientBase:
         )
 
     @staticmethod
-    def _parse_get_sync_token_response(responses: list, api_url: str) -> str:
-        for method_name, resp_args, _ in responses:
-            if method_name == "CalendarEvent/get":
+    def _parse_state_response(responses: list, api_url: str, method_name: str) -> str:
+        """Read the ``state`` field from the first response matching
+        ``method_name``, or raise if there is none.
+
+        Shared by every ``_parse_get_*_sync_token_response`` (CalendarEvent,
+        Task): both call a ``*/get`` method with an empty ``ids`` list purely
+        to read its ``state`` field, differing only in which method name to
+        match.
+        """
+        for name, resp_args, _ in responses:
+            if name == method_name:
                 return resp_args.get("state", "")
-        raise JMAPMethodError(url=api_url, reason="No CalendarEvent/get response")
+        raise JMAPMethodError(url=api_url, reason=f"No {method_name} response")
 
     @staticmethod
-    def _parse_event_changes_response(
-        responses: list, api_url: str
+    def _parse_get_sync_token_response(responses: list, api_url: str) -> str:
+        return _JMAPClientBase._parse_state_response(responses, api_url, "CalendarEvent/get")
+
+    @staticmethod
+    def _parse_changes_response(
+        responses: list,
+        api_url: str,
+        method_name: str,
+        parse_changes,
+        retry_hint: str,
     ) -> tuple[list[str], list[str], list[str], str]:
-        """Parse a CalendarEvent/changes response.
+        """Parse a ``<Type>/changes`` response.
+
+        Shared by every ``_parse_*_changes_response`` (CalendarEvent, Task):
+        each one differs only in the method name to match and the parser
+        function that turns ``resp_args`` into the 6-tuple :rfc:`8620#section-5.2`
+        defines.
 
         Returns ``(created_ids, updated_ids, destroyed_ids, new_sync_token)``.
         Raises :class:`JMAPMethodError` when the server truncated the result.
@@ -723,22 +749,60 @@ class _JMAPClientBase:
         updated_ids: list[str] = []
         destroyed: list[str] = []
         new_sync_token: str = ""
-        for method_name, resp_args, _ in responses:
-            if method_name == "CalendarEvent/changes":
-                _, new_sync_token, has_more, created_ids, updated_ids, destroyed = (
-                    parse_event_changes(resp_args)
+        for name, resp_args, _ in responses:
+            if name == method_name:
+                _, new_sync_token, has_more, created_ids, updated_ids, destroyed = parse_changes(
+                    resp_args
                 )
                 if has_more:
                     raise JMAPMethodError(
                         url=api_url,
                         reason=(
-                            "CalendarEvent/changes response was truncated by the server "
-                            "(hasMoreChanges=true). Call get_sync_token() to obtain a "
+                            f"{method_name} response was truncated by the server "
+                            f"(hasMoreChanges=true). Call {retry_hint} to obtain a "
                             "fresh baseline and re-sync."
                         ),
                         error_type="serverPartialFail",
                     )
         return created_ids, updated_ids, destroyed, new_sync_token
+
+    @staticmethod
+    def _parse_event_changes_response(
+        responses: list, api_url: str
+    ) -> tuple[list[str], list[str], list[str], str]:
+        return _JMAPClientBase._parse_changes_response(
+            responses, api_url, "CalendarEvent/changes", parse_event_changes, "get_sync_token()"
+        )
+
+    @staticmethod
+    def _assemble_changes_result(
+        get_responses: list,
+        get_method_name: str,
+        parse_get,
+        wrap_item,
+        created_ids: list[str],
+        updated_ids: list[str],
+        destroyed: list[str],
+        new_sync_token: str,
+    ) -> tuple[list, list, list[str], str]:
+        """Build ``(added, modified, deleted, new_sync_token)`` from a batched
+        ``<Type>/get`` response, keyed by id then mapped through
+        ``created_ids``/``updated_ids``.
+
+        Shared by every ``_assemble_*_sync_token_result`` (CalendarEvent,
+        Task): each one differs only in the ``/get`` method name, the item
+        parser, and whether results are wrapped in a domain object
+        (``wrap_item``; the identity function for tasks, which return raw
+        dicts) or returned as-is.
+        """
+        items_by_id: dict[str, object] = {}
+        for name, resp_args, _ in get_responses:
+            if name == get_method_name:
+                for item in parse_get(resp_args):
+                    items_by_id[item["id"]] = wrap_item(item)
+        added = [items_by_id[i] for i in created_ids if i in items_by_id]
+        modified = [items_by_id[i] for i in updated_ids if i in items_by_id]
+        return added, modified, destroyed, new_sync_token
 
     @staticmethod
     def _assemble_sync_token_result(
@@ -748,14 +812,16 @@ class _JMAPClientBase:
         destroyed: list[str],
         new_sync_token: str,
     ) -> tuple[list[JMAPCalendarObject], list[JMAPCalendarObject], list[str], str]:
-        events_by_id: dict[str, JMAPCalendarObject] = {}
-        for method_name, resp_args, _ in get_responses:
-            if method_name == "CalendarEvent/get":
-                for item in parse_event_get(resp_args):
-                    events_by_id[item["id"]] = JMAPCalendarObject(data=item, parent=None)
-        added = [events_by_id[i] for i in created_ids if i in events_by_id]
-        modified = [events_by_id[i] for i in updated_ids if i in events_by_id]
-        return added, modified, destroyed, new_sync_token
+        return _JMAPClientBase._assemble_changes_result(
+            get_responses,
+            "CalendarEvent/get",
+            parse_event_get,
+            lambda item: JMAPCalendarObject(data=item, parent=None),
+            created_ids,
+            updated_ids,
+            destroyed,
+            new_sync_token,
+        )
 
     @staticmethod
     def _parse_get_task_lists_response(responses: list) -> list[dict]:
@@ -774,6 +840,142 @@ class _JMAPClientBase:
                     )
                 return items[0]
         raise JMAPMethodError(url=api_url, reason="No Task/get response")
+
+    @staticmethod
+    def _parse_get_task_sync_token_response(responses: list, api_url: str) -> str:
+        return _JMAPClientBase._parse_state_response(responses, api_url, "Task/get")
+
+    @staticmethod
+    def _parse_task_changes_response(
+        responses: list, api_url: str
+    ) -> tuple[list[str], list[str], list[str], str]:
+        return _JMAPClientBase._parse_changes_response(
+            responses, api_url, "Task/changes", parse_task_changes, "get_task_sync_token()"
+        )
+
+    @staticmethod
+    def _assemble_task_sync_token_result(
+        get_responses: list,
+        created_ids: list[str],
+        updated_ids: list[str],
+        destroyed: list[str],
+        new_sync_token: str,
+    ) -> tuple[list[dict], list[dict], list[str], str]:
+        return _JMAPClientBase._assemble_changes_result(
+            get_responses,
+            "Task/get",
+            parse_task_get,
+            lambda item: item,
+            created_ids,
+            updated_ids,
+            destroyed,
+            new_sync_token,
+        )
+
+    @staticmethod
+    def _build_task_search_calls(account_id: str, text: str | None) -> list[tuple]:
+        """Return a batched [Task/query, Task/get] call list for search_tasks."""
+        filter_condition = _JMAPClientBase._filter_from(text=text)
+        query_call = build_task_query(account_id, filter_condition=filter_condition)
+        get_call = build_task_get_by_query_result(account_id)
+        return [query_call, get_call]
+
+    @staticmethod
+    def _task_matches_search_filters(
+        task_data: dict,
+        due_before: str | None,
+        due_after: str | None,
+        progress: str | None,
+        text: str | None = None,
+    ) -> bool:
+        """Return whether ``task_data`` (a raw JMAP Task dict) passes every
+        client-side filter that was actually requested.
+
+        ``due_before``/``due_after`` have no corresponding Task/query filter
+        property (draft-ietf-jmap-tasks section 4.13 never defines one), so
+        they run in Python against the already-fetched task's ``due``
+        (:rfc:`8984#section-5.2.1`, LocalDateTime, lexicographically ordered).
+        A task with no ``due`` set does not match either when given.
+        ``progress`` matches :rfc:`8984#section-5.2.5`'s own value, treating
+        an absent value as ``"needs-action"``. That section's real default is
+        a derivation from participant ``progress`` values, not an
+        unconditional ``"needs-action"``, but this client never sets a
+        Task's ``participants``, so the derivation always bottoms out at
+        ``"needs-action"`` for any task this client can create.
+
+        ``text`` is normally sent server-side via ``Task/query``'s filter
+        (see :meth:`_build_task_search_calls`) and left ``None`` here, so
+        this check is skipped; :meth:`_search_tasks_via_fallback` is the
+        only caller that passes it, since a server with no ``Task/query``
+        support at all needs every filter, including ``text``, applied
+        client-side. Matches as a case-insensitive substring of ``title``,
+        the one property every task has; draft-ietf-jmap-tasks never
+        defines which properties a real ``Task/query`` ``text`` filter
+        would search, so this is this client's own choice, not a spec rule.
+        """
+        due = task_data.get("due")
+        if due_before is not None and (due is None or not due < due_before):
+            return False
+        if due_after is not None and (due is None or not due > due_after):
+            return False
+        if progress is not None and task_data.get("progress", "needs-action") != progress:
+            return False
+        if text is not None and text.lower() not in (task_data.get("title") or "").lower():
+            return False
+        return True
+
+    @staticmethod
+    def _parse_search_tasks_response(responses: list) -> list[dict]:
+        return _JMAPClientBase._first_matching_list(responses, "Task/get", parse_task_get)
+
+    @staticmethod
+    def _is_task_query_unsupported_http_error(error: Exception) -> bool:
+        """Return whether ``error`` is a request-level rejection meaning the
+        server doesn't support ``Task/query`` (or the tasks capability at
+        all), as opposed to a genuine failure that should propagate.
+
+        Confirmed live this project's own test servers reject an
+        unsupported capability at the request level, not the method level,
+        so this check (unlike :meth:`_should_fall_back_to_query`'s
+        method-level ``error_type`` check) inspects the HTTP error body
+        instead. Cyrus returns ``unknownCapability``; Stalwart returns
+        ``notRequest`` for any capability it doesn't recognize at all
+        (confirmed live: the identical response for a real unsupported
+        capability and a made-up nonexistent one), so both are treated as
+        "not supported," not just the standards-named one.
+        """
+        if not isinstance(error, requests.HTTPError) or error.response is None:
+            return False
+        if error.response.status_code != 400:
+            return False
+        try:
+            body = error.response.json()
+        except ValueError:
+            return False
+        return body.get("type") in (
+            "urn:ietf:params:jmap:error:unknownCapability",
+            "urn:ietf:params:jmap:error:notRequest",
+        )
+
+    @staticmethod
+    def _should_fall_back_from_task_query(error: Exception) -> bool:
+        """Return whether ``error``, raised by the primary ``Task/query``
+        path, means ``search_tasks`` should retry via
+        :meth:`_search_tasks_via_fallback`, as opposed to propagating.
+
+        Shared by the sync and async ``search_tasks``: both catch
+        ``(requests.HTTPError, JMAPMethodError)`` around the same primary
+        call and need the identical two-way decision, a method-level
+        ``error_type`` check for ``JMAPMethodError``
+        (:meth:`_should_fall_back_to_query`, the same one
+        ``get_availability`` uses) or a request-level body check for
+        ``requests.HTTPError`` (:meth:`_is_task_query_unsupported_http_error`).
+        """
+        if isinstance(error, JMAPMethodError):
+            return _JMAPClientBase._should_fall_back_to_query(error.error_type)
+        if isinstance(error, requests.HTTPError):
+            return _JMAPClientBase._is_task_query_unsupported_http_error(error)
+        return False
 
     @staticmethod
     def _build_attachment_patch(
@@ -2228,3 +2430,146 @@ class JMAPClient(_JMAPClientBase):
             [build_task_set_destroy(session.account_id, [task_id])], using=_TASK_USING
         )
         self._parse_delete_response(responses, session.api_url, "Task/set", parse_task_set, task_id)
+
+    def get_task_sync_token(self) -> str:
+        """Return the current Task state string for use as a sync token.
+
+        Calls ``Task/get`` with an empty ID list, so no task data is
+        transferred, only the ``state`` field from the response. Reads the
+        ``Task`` type's own state counter, not ``TaskList``'s: RFC 8620
+        section 5.2's ``/changes`` is scoped per type, and
+        :meth:`get_tasks_by_sync_token` calls ``Task/changes``, which only
+        accepts a state previously returned for ``Task`` itself.
+
+        Returns:
+            Opaque state string. Pass to :meth:`get_tasks_by_sync_token` to
+            retrieve only what changed since this point.
+        """
+        session = self._get_session()
+        responses = self._request([build_task_get(session.account_id, ids=[])], using=_TASK_USING)
+        return self._parse_get_task_sync_token_response(responses, session.api_url)
+
+    def get_tasks_by_sync_token(
+        self, sync_token: str
+    ) -> tuple[list[dict], list[dict], list[str], str]:
+        """Fetch tasks changed since a previous sync token.
+
+        Calls ``Task/changes`` to discover which tasks were created,
+        modified, or destroyed since ``sync_token`` was issued. Created and
+        modified tasks are returned as raw JMAP Task dicts, matching every
+        other task method's own return convention; destroyed tasks are
+        returned as IDs.
+
+        Args:
+            sync_token: A state string previously returned by
+                :meth:`get_task_sync_token` or by a prior call to this method.
+
+        Returns:
+            A 4-tuple ``(added, modified, deleted, new_sync_token)``:
+
+            - ``added``: raw dicts for newly created tasks.
+            - ``modified``: raw dicts for updated tasks.
+            - ``deleted``: Task IDs that were destroyed.
+            - ``new_sync_token``: Pass to the next call to this method as ``sync_token``.
+
+        Raises:
+            JMAPMethodError: If the server reports ``hasMoreChanges: true``.
+        """
+        session = self._get_session()
+        responses = self._request(
+            [build_task_changes(session.account_id, sync_token)], using=_TASK_USING
+        )
+        created_ids, updated_ids, destroyed, new_sync_token = self._parse_task_changes_response(
+            responses, session.api_url
+        )
+        fetch_ids = created_ids + updated_ids
+        if not fetch_ids:
+            return [], [], destroyed, new_sync_token
+        get_responses = self._request(
+            [build_task_get(session.account_id, ids=fetch_ids)], using=_TASK_USING
+        )
+        return self._assemble_task_sync_token_result(
+            get_responses, created_ids, updated_ids, destroyed, new_sync_token
+        )
+
+    def search_tasks(
+        self,
+        text: str | None = None,
+        due_before: str | None = None,
+        due_after: str | None = None,
+        progress: str | None = None,
+    ) -> list[dict]:
+        """Search for tasks.
+
+        All parameters are optional; omitting all returns every task in the
+        account. Tries ``Task/query`` first, sending ``text`` server-side
+        via its filter. Falls back to fetching every task with ``Task/get``
+        and filtering everything, including ``text``, client-side when the
+        server rejects the request specifically for lacking ``Task/query``,
+        the same fallback shape :meth:`get_availability` already uses for
+        ``Principal/getAvailability``.
+
+        Confirmed live this fallback cannot help against either Cyrus or
+        Stalwart today: both reject the entire ``urn:ietf:params:jmap:tasks``
+        capability, not ``Task/query`` specifically, so the fallback's own
+        ``Task/get`` call (which needs that same capability) fails
+        identically and the error still propagates. It only helps a future
+        server that implements the tasks capability well enough for
+        ``Task/get`` to work but specifically lacks ``Task/query``, a
+        plausible partial-implementation gap given draft-ietf-jmap-tasks
+        section 4.13 itself never defines that method's filter shape.
+
+        ``due_before``, ``due_after``, and ``progress`` have no corresponding
+        Task/query filter property (draft-ietf-jmap-tasks section 4.13 never
+        defines one), so they always filter client-side, in Python, against
+        whatever the primary or fallback path already returned. All filters
+        combine as AND.
+
+        Args:
+            text: Free-text search. Sent server-side via ``Task/query`` on
+                the primary path; matched as a case-insensitive substring of
+                ``title`` on the fallback path (see
+                :meth:`_task_matches_search_filters`).
+            due_before: Only tasks whose ``due`` sorts before this value
+                (:rfc:`8984#section-5.2.1` LocalDateTime,
+                ``YYYY-MM-DDTHH:MM:SS``). A task with no ``due`` set never
+                matches.
+            due_after: Only tasks whose ``due`` sorts after this value. A
+                task with no ``due`` set never matches.
+            progress: Only tasks whose ``progress`` equals this value,
+                treating an absent value as ``"needs-action"``
+                (:rfc:`8984#section-5.2.5`'s real default derives from
+                participant progress values; this client never sets a
+                Task's ``participants``, so that derivation always lands on
+                ``"needs-action"`` here).
+
+        Returns:
+            List of raw JMAP Task dicts.
+        """
+        session = self._get_session()
+        try:
+            calls = self._build_task_search_calls(session.account_id, text)
+            responses = self._request(calls, using=_TASK_USING)
+            results = self._parse_search_tasks_response(responses)
+        except (requests.HTTPError, JMAPMethodError) as e:
+            if not self._should_fall_back_from_task_query(e):
+                raise
+            results = self._search_tasks_via_fallback(session.account_id)
+            if any(v is not None for v in (due_before, due_after, progress, text)):
+                results = [
+                    r
+                    for r in results
+                    if self._task_matches_search_filters(r, due_before, due_after, progress, text)
+                ]
+            return results
+        if any(v is not None for v in (due_before, due_after, progress)):
+            results = [
+                r
+                for r in results
+                if self._task_matches_search_filters(r, due_before, due_after, progress)
+            ]
+        return results
+
+    def _search_tasks_via_fallback(self, account_id: str) -> list[dict]:
+        responses = self._request([build_task_get(account_id)], using=_TASK_USING)
+        return self._parse_search_tasks_response(responses)

@@ -19,7 +19,7 @@ import uuid
 import warnings
 from typing import TYPE_CHECKING, Literal
 
-from calendaring_jmap._http import require_async_session
+from calendaring_jmap._http import requests, require_async_session
 
 if TYPE_CHECKING:
     ## require_async_session() returns this same class at runtime, but as a
@@ -55,6 +55,7 @@ from calendaring_jmap._methods.push import (
     parse_push_subscription_set,
 )
 from calendaring_jmap._methods.task import (
+    build_task_changes,
     build_task_get,
     build_task_list_get,
     build_task_set_create,
@@ -1132,3 +1133,108 @@ class AsyncJMAPClient(_JMAPClientBase):
             [build_task_set_destroy(session.account_id, [task_id])], using=_TASK_USING
         )
         self._parse_delete_response(responses, session.api_url, "Task/set", parse_task_set, task_id)
+
+    async def get_task_sync_token(self) -> str:
+        """Return the current Task state string for use as a sync token.
+
+        Calls ``Task/get`` with an empty ID list, so no task data is
+        transferred, only the ``state`` field from the response. Reads the
+        ``Task`` type's own state counter, not ``TaskList``'s: RFC 8620
+        section 5.2's ``/changes`` is scoped per type, and
+        :meth:`get_tasks_by_sync_token` calls ``Task/changes``, which only
+        accepts a state previously returned for ``Task`` itself.
+
+        Returns:
+            Opaque state string. Pass to :meth:`get_tasks_by_sync_token` to
+            retrieve only what changed since this point.
+        """
+        session = await self._get_session()
+        responses = await self._request(
+            [build_task_get(session.account_id, ids=[])], using=_TASK_USING
+        )
+        return self._parse_get_task_sync_token_response(responses, session.api_url)
+
+    async def get_tasks_by_sync_token(
+        self, sync_token: str
+    ) -> tuple[list[dict], list[dict], list[str], str]:
+        """Fetch tasks changed since a previous sync token.
+
+        Calls ``Task/changes`` to discover which tasks were created,
+        modified, or destroyed since ``sync_token`` was issued. Created and
+        modified tasks are returned as raw JMAP Task dicts, matching every
+        other task method's own return convention; destroyed tasks are
+        returned as IDs.
+
+        Args:
+            sync_token: A state string previously returned by
+                :meth:`get_task_sync_token` or by a prior call to this method.
+
+        Returns:
+            A 4-tuple ``(added, modified, deleted, new_sync_token)``:
+
+            - ``added``: raw dicts for newly created tasks.
+            - ``modified``: raw dicts for updated tasks.
+            - ``deleted``: Task IDs that were destroyed.
+            - ``new_sync_token``: Pass to the next call to this method as ``sync_token``.
+
+        Raises:
+            JMAPMethodError: If the server reports ``hasMoreChanges: true``.
+        """
+        session = await self._get_session()
+        responses = await self._request(
+            [build_task_changes(session.account_id, sync_token)], using=_TASK_USING
+        )
+        created_ids, updated_ids, destroyed, new_sync_token = self._parse_task_changes_response(
+            responses, session.api_url
+        )
+        fetch_ids = created_ids + updated_ids
+        if not fetch_ids:
+            return [], [], destroyed, new_sync_token
+        get_responses = await self._request(
+            [build_task_get(session.account_id, ids=fetch_ids)], using=_TASK_USING
+        )
+        return self._assemble_task_sync_token_result(
+            get_responses, created_ids, updated_ids, destroyed, new_sync_token
+        )
+
+    async def search_tasks(
+        self,
+        text: str | None = None,
+        due_before: str | None = None,
+        due_after: str | None = None,
+        progress: str | None = None,
+    ) -> list[dict]:
+        """Search for tasks.
+
+        See :meth:`JMAPClient.search_tasks` for the full semantics,
+        including why ``due_before``/``due_after``/``progress`` filter
+        client-side and what the ``Task/query``-unsupported fallback can
+        and cannot help with.
+        """
+        session = await self._get_session()
+        try:
+            calls = self._build_task_search_calls(session.account_id, text)
+            responses = await self._request(calls, using=_TASK_USING)
+            results = self._parse_search_tasks_response(responses)
+        except (requests.HTTPError, JMAPMethodError) as e:
+            if not self._should_fall_back_from_task_query(e):
+                raise
+            results = await self._search_tasks_via_fallback(session.account_id)
+            if any(v is not None for v in (due_before, due_after, progress, text)):
+                results = [
+                    r
+                    for r in results
+                    if self._task_matches_search_filters(r, due_before, due_after, progress, text)
+                ]
+            return results
+        if any(v is not None for v in (due_before, due_after, progress)):
+            results = [
+                r
+                for r in results
+                if self._task_matches_search_filters(r, due_before, due_after, progress)
+            ]
+        return results
+
+    async def _search_tasks_via_fallback(self, account_id: str) -> list[dict]:
+        responses = await self._request([build_task_get(account_id)], using=_TASK_USING)
+        return self._parse_search_tasks_response(responses)

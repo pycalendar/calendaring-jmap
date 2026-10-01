@@ -1995,6 +1995,91 @@ class TestEventSearchFilters:
         )
 
 
+class TestTaskSearchFilters:
+    """Direct unit tests for the static helper search_tasks's client-side
+    filters are built on, independent of the search_tasks request/response
+    plumbing tested in TestJMAPClientTasks."""
+
+    def test_task_matches_search_filters_true_when_all_args_none(self):
+        assert _JMAPClientBase._task_matches_search_filters({}, None, None, None)
+
+    def test_task_matches_search_filters_due_before(self):
+        task = {"due": "2026-01-01T00:00:00"}
+        assert _JMAPClientBase._task_matches_search_filters(task, "2026-06-01T00:00:00", None, None)
+        assert not _JMAPClientBase._task_matches_search_filters(
+            task, "2025-06-01T00:00:00", None, None
+        )
+
+    def test_task_matches_search_filters_due_after(self):
+        task = {"due": "2026-06-01T00:00:00"}
+        assert _JMAPClientBase._task_matches_search_filters(task, None, "2026-01-01T00:00:00", None)
+        assert not _JMAPClientBase._task_matches_search_filters(
+            task, None, "2026-12-01T00:00:00", None
+        )
+
+    def test_task_matches_search_filters_no_due_never_matches(self):
+        task = {}
+        assert not _JMAPClientBase._task_matches_search_filters(
+            task, "2026-06-01T00:00:00", None, None
+        )
+        assert not _JMAPClientBase._task_matches_search_filters(
+            task, None, "2026-01-01T00:00:00", None
+        )
+
+    def test_task_matches_search_filters_progress_explicit(self):
+        task = {"progress": "completed"}
+        assert _JMAPClientBase._task_matches_search_filters(task, None, None, "completed")
+        assert not _JMAPClientBase._task_matches_search_filters(task, None, None, "needs-action")
+
+    def test_task_matches_search_filters_progress_default(self):
+        # No progress set at all: defaults to needs-action.
+        task = {}
+        assert _JMAPClientBase._task_matches_search_filters(task, None, None, "needs-action")
+        assert not _JMAPClientBase._task_matches_search_filters(task, None, None, "completed")
+
+    def test_task_matches_search_filters_combined_requires_all(self):
+        task = {"due": "2026-01-01T00:00:00", "progress": "needs-action"}
+        assert _JMAPClientBase._task_matches_search_filters(
+            task, "2026-06-01T00:00:00", None, "needs-action"
+        )
+        assert not _JMAPClientBase._task_matches_search_filters(
+            task, "2026-06-01T00:00:00", None, "completed"
+        )
+
+    def test_is_task_query_unsupported_http_error_false_for_non_http_error(self):
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(
+            ValueError("not an HTTPError")
+        )
+
+    def test_is_task_query_unsupported_http_error_false_when_no_response_attached(self):
+        error = _http_requests.HTTPError("no response")
+        assert error.response is None
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_is_task_query_unsupported_http_error_false_for_non_400_status(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        error = _http_requests.HTTPError("HTTP 500", response=mock_resp)
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_is_task_query_unsupported_http_error_false_for_non_json_body(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.json.side_effect = ValueError("not JSON")
+        error = _http_requests.HTTPError("HTTP 400", response=mock_resp)
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_is_task_query_unsupported_http_error_false_for_unrelated_400_error_type(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.json.return_value = {"type": "urn:ietf:params:jmap:error:invalidArguments"}
+        error = _http_requests.HTTPError("HTTP 400", response=mock_resp)
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_should_fall_back_from_task_query_false_for_unrelated_exception(self):
+        assert not _JMAPClientBase._should_fall_back_from_task_query(ValueError("unrelated"))
+
+
 from calendaring_jmap import get_jmap_client
 
 
@@ -2123,11 +2208,16 @@ from calendaring_jmap._methods.event import (
     parse_event_get,
 )
 from calendaring_jmap._methods.task import (
+    build_task_changes,
     build_task_get,
+    build_task_get_by_query_result,
     build_task_list_get,
+    build_task_query,
     build_task_set_create,
     build_task_set_destroy,
     build_task_set_update,
+    parse_task_changes,
+    parse_task_get,
     parse_task_list_get,
 )
 
@@ -4147,12 +4237,48 @@ def _set_response(method_name: str, call_id: str, **kwargs) -> dict:
     return {"methodResponses": [[method_name, kwargs, call_id]]}
 
 
-def _get_response(method_name: str, call_id: str, items: list[dict]) -> dict:
+def _get_response(
+    method_name: str, call_id: str, items: list[dict], state: str | None = None
+) -> dict:
     """A minimal ``<Object>/get`` response envelope: one methodResponse
-    with ``list``/``notFound``. Shared the same way as :func:`_set_response`."""
+    with ``list``/``notFound``, plus ``state`` when given (for a sync-token
+    call that only cares about the response's own state, e.g.
+    ``get_sync_token``/``get_task_sync_token``). Shared the same way as
+    :func:`_set_response`."""
+    args: dict = {"accountId": _USERNAME, "list": items, "notFound": []}
+    if state is not None:
+        args["state"] = state
+    return {"methodResponses": [[method_name, args, call_id]]}
+
+
+def _changes_response(
+    method_name: str,
+    call_id: str,
+    created=None,
+    updated=None,
+    destroyed=None,
+    old_state="state-1",
+    new_state="state-2",
+    has_more=False,
+) -> dict:
+    """A minimal ``<Object>/changes`` response envelope: one methodResponse
+    with ``oldState``/``newState``/``hasMoreChanges``/``created``/``updated``/
+    ``destroyed``. Shared the same way as :func:`_set_response`."""
     return {
         "methodResponses": [
-            [method_name, {"accountId": _USERNAME, "list": items, "notFound": []}, call_id]
+            [
+                method_name,
+                {
+                    "accountId": _USERNAME,
+                    "oldState": old_state,
+                    "newState": new_state,
+                    "hasMoreChanges": has_more,
+                    "created": created or [],
+                    "updated": updated or [],
+                    "destroyed": destroyed or [],
+                },
+                call_id,
+            ]
         ]
     }
 
@@ -5826,34 +5952,19 @@ class TestJMAPClientSync(_MockedClientMixin):
         new_state="state-2",
         has_more=False,
     ):
-        return {
-            "methodResponses": [
-                [
-                    "CalendarEvent/changes",
-                    {
-                        "accountId": _USERNAME,
-                        "oldState": old_state,
-                        "newState": new_state,
-                        "hasMoreChanges": has_more,
-                        "created": created or [],
-                        "updated": updated or [],
-                        "destroyed": destroyed or [],
-                    },
-                    "ev-changes-0",
-                ]
-            ]
-        }
+        return _changes_response(
+            "CalendarEvent/changes",
+            "ev-changes-0",
+            created=created,
+            updated=updated,
+            destroyed=destroyed,
+            old_state=old_state,
+            new_state=new_state,
+            has_more=has_more,
+        )
 
     def _get_resp_with_state(self, items, state="state-2"):
-        return {
-            "methodResponses": [
-                [
-                    "CalendarEvent/get",
-                    {"accountId": _USERNAME, "state": state, "list": items, "notFound": []},
-                    "ev-get-0",
-                ]
-            ]
-        }
+        return _get_response("CalendarEvent/get", "ev-get-0", items, state=state)
 
     def test_get_sync_token_returns_state(self):
         resp = self._get_resp_with_state([], state="tok-1")
@@ -6026,6 +6137,63 @@ class TestTaskMethodBuilders:
         assert destroyed == ["t3"]
         assert not_created == {"new-1": {"type": "invalidArguments"}}
 
+    def test_build_task_changes_structure(self):
+        method, args, call_id = build_task_changes("u1", "state-1")
+        assert method == "Task/changes"
+        assert args["accountId"] == "u1"
+        assert args["sinceState"] == "state-1"
+        assert "maxChanges" not in args
+        assert call_id == "task-changes-0"
+
+    def test_build_task_changes_with_max_changes(self):
+        _, args, _ = build_task_changes("u1", "state-1", max_changes=50)
+        assert args["maxChanges"] == 50
+
+    def test_parse_task_changes_all_fields(self):
+        resp_args = {
+            "oldState": "s1",
+            "newState": "s2",
+            "hasMoreChanges": True,
+            "created": ["t1"],
+            "updated": ["t2"],
+            "destroyed": ["t3"],
+        }
+        old, new, has_more, created, updated, destroyed = parse_task_changes(resp_args)
+        assert old == "s1"
+        assert new == "s2"
+        assert has_more is True
+        assert created == ["t1"]
+        assert updated == ["t2"]
+        assert destroyed == ["t3"]
+
+    def test_build_task_query_structure(self):
+        method, args, call_id = build_task_query("u1")
+        assert method == "Task/query"
+        assert args["accountId"] == "u1"
+        assert call_id == "task-query-0"
+
+    def test_build_task_query_with_filter(self):
+        _, args, _ = build_task_query("u1", filter_condition={"text": "groceries"})
+        assert args["filter"] == {"text": "groceries"}
+
+    def test_build_task_get_by_query_result_structure(self):
+        method, args, call_id = build_task_get_by_query_result("u1")
+        assert method == "Task/get"
+        assert args["accountId"] == "u1"
+        assert args["#ids"]["resultOf"] == "task-query-0"
+        assert args["#ids"]["name"] == "Task/query"
+        assert call_id == "task-get-1"
+
+    def test_parse_task_get_returns_tasks(self):
+        resp_args = {"list": [{"id": "t1", "title": "A"}, {"id": "t2", "title": "B"}]}
+        results = parse_task_get(resp_args)
+        assert len(results) == 2
+        assert all(isinstance(r, dict) for r in results)
+        assert results[0]["title"] == "A"
+
+    def test_parse_task_get_empty_list(self):
+        assert parse_task_get({}) == []
+
 
 class TestJMAPClientTasks(_MockedClientMixin):
     _MINIMAL_TASK = {
@@ -6051,6 +6219,295 @@ class TestJMAPClientTasks(_MockedClientMixin):
 
     def _tasklist_response(self, items):
         return _get_response("TaskList/get", "tasklist-get-0", items)
+
+    def _task_changes_resp(
+        self,
+        created=None,
+        updated=None,
+        destroyed=None,
+        old_state="state-1",
+        new_state="state-2",
+        has_more=False,
+    ):
+        return _changes_response(
+            "Task/changes",
+            "task-changes-0",
+            created=created,
+            updated=updated,
+            destroyed=destroyed,
+            old_state=old_state,
+            new_state=new_state,
+            has_more=has_more,
+        )
+
+    def _task_resp_with_state(self, state="tok-1"):
+        return _get_response("Task/get", "task-get-0", [], state=state)
+
+    def test_get_task_sync_token_returns_state(self):
+        """Gate the ultrareview finding: get_task_sync_token must read
+        Task/get's own state, not TaskList/get's, since Task/changes
+        (get_tasks_by_sync_token) only accepts a state previously returned
+        for the Task type itself (RFC 8620 section 5.2)."""
+        resp = self._task_resp_with_state(state="tok-1")
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        assert client.get_task_sync_token() == "tok-1"
+
+    def test_get_task_sync_token_sends_task_get_not_tasklist_get(self, monkeypatch):
+        """Gate the ultrareview finding directly: confirms the wire call is
+        Task/get, not TaskList/get, so the state token it returns is
+        type-compatible with Task/changes's sinceState."""
+        resp = self._task_resp_with_state()
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.get_task_sync_token()
+        assert captured["json"]["methodCalls"][0][0] == "Task/get"
+
+    def test_get_task_sync_token_sends_empty_ids(self, monkeypatch):
+        resp = self._task_resp_with_state()
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.get_task_sync_token()
+        assert captured["json"]["methodCalls"][0][1]["ids"] == []
+
+    def test_get_tasks_no_changes(self):
+        resp = self._task_changes_resp()
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        added, modified, deleted, _ = client.get_tasks_by_sync_token("state-1")
+        assert added == [] and modified == [] and deleted == []
+
+    def test_get_tasks_deleted_returns_ids(self):
+        resp = self._task_changes_resp(destroyed=["task1"])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        added, modified, deleted, _ = client.get_tasks_by_sync_token("state-1")
+        assert deleted == ["task1"] and added == [] and modified == []
+
+    def test_get_tasks_added_returns_dicts(self):
+        changes_resp = self._task_changes_resp(created=["task1"])
+        get_resp = self._get_response([self._MINIMAL_TASK])
+        client = self._make_client()
+        self._mock_http(
+            client,
+            side_effect=[self._make_mock(changes_resp), self._make_mock(get_resp)],
+        )
+        added, modified, deleted, _ = client.get_tasks_by_sync_token("state-1")
+        assert len(added) == 1
+        assert isinstance(added[0], dict)
+        assert added[0]["id"] == "task1"
+        assert modified == [] and deleted == []
+
+    def test_get_tasks_modified_returns_dicts(self):
+        changes_resp = self._task_changes_resp(updated=["task1"])
+        get_resp = self._get_response([self._MINIMAL_TASK])
+        client = self._make_client()
+        self._mock_http(
+            client,
+            side_effect=[self._make_mock(changes_resp), self._make_mock(get_resp)],
+        )
+        added, modified, deleted, _ = client.get_tasks_by_sync_token("state-1")
+        assert len(modified) == 1
+        assert isinstance(modified[0], dict)
+        assert modified[0]["id"] == "task1"
+        assert added == [] and deleted == []
+
+    def test_get_tasks_has_more_raises(self):
+        resp = self._task_changes_resp(created=["task1"], has_more=True)
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        with pytest.raises(JMAPMethodError) as exc_info:
+            client.get_tasks_by_sync_token("state-1")
+        assert exc_info.value.error_type == "serverPartialFail"
+
+    def _task_query_response(self, items):
+        return _query_get_response(
+            items,
+            query_method="Task/query",
+            query_call_id="task-query-0",
+            get_method="Task/get",
+            get_call_id="task-get-1",
+        )
+
+    def test_search_tasks_sends_text_server_side(self, monkeypatch):
+        resp = self._task_query_response([])
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.search_tasks(text="groceries")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"text": "groceries"}
+
+    def test_search_tasks_no_filter_sends_no_filter_argument(self, monkeypatch):
+        resp = self._task_query_response([])
+        client, captured = self._capturing_client(monkeypatch, resp)
+        client.search_tasks()
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert "filter" not in query_args
+
+    def test_search_tasks_returns_dicts(self):
+        resp = self._task_query_response([self._MINIMAL_TASK])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        results = client.search_tasks()
+        assert len(results) == 1
+        assert isinstance(results[0], dict)
+        assert results[0]["id"] == "task1"
+
+    def test_search_tasks_due_before_filters_client_side(self):
+        early = {**self._MINIMAL_TASK, "id": "early", "due": "2026-01-01T00:00:00"}
+        late = {**self._MINIMAL_TASK, "id": "late", "due": "2026-06-01T00:00:00"}
+        resp = self._task_query_response([early, late])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        results = client.search_tasks(due_before="2026-03-01T00:00:00")
+        assert [r["id"] for r in results] == ["early"]
+
+    def test_search_tasks_due_after_filters_client_side(self):
+        early = {**self._MINIMAL_TASK, "id": "early", "due": "2026-01-01T00:00:00"}
+        late = {**self._MINIMAL_TASK, "id": "late", "due": "2026-06-01T00:00:00"}
+        resp = self._task_query_response([early, late])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        results = client.search_tasks(due_after="2026-03-01T00:00:00")
+        assert [r["id"] for r in results] == ["late"]
+
+    def test_search_tasks_due_filter_excludes_task_with_no_due(self):
+        no_due = {**self._MINIMAL_TASK, "id": "no-due"}
+        assert "due" not in no_due
+        resp = self._task_query_response([no_due])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        assert client.search_tasks(due_before="2026-06-01T00:00:00") == []
+        client2 = self._make_client()
+        self._mock_http(client2, self._make_mock(resp))
+        assert client2.search_tasks(due_after="2026-01-01T00:00:00") == []
+
+    def test_search_tasks_progress_matches_explicit_value(self):
+        done = {**self._MINIMAL_TASK, "id": "done", "progress": "completed"}
+        pending = {**self._MINIMAL_TASK, "id": "pending", "progress": "needs-action"}
+        resp = self._task_query_response([done, pending])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        results = client.search_tasks(progress="completed")
+        assert [r["id"] for r in results] == ["done"]
+
+    def test_search_tasks_progress_defaults_absent_to_needs_action(self):
+        no_progress = {k: v for k, v in self._MINIMAL_TASK.items() if k != "progress"}
+        assert "progress" not in no_progress
+        resp = self._task_query_response([no_progress])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        results = client.search_tasks(progress="needs-action")
+        assert [r["id"] for r in results] == [no_progress["id"]]
+
+    def test_search_tasks_combined_filters_require_all_to_pass(self):
+        matches_both = {
+            **self._MINIMAL_TASK,
+            "id": "both",
+            "due": "2026-01-01T00:00:00",
+            "progress": "completed",
+        }
+        matches_one = {
+            **self._MINIMAL_TASK,
+            "id": "one",
+            "due": "2026-01-01T00:00:00",
+            "progress": "needs-action",
+        }
+        resp = self._task_query_response([matches_both, matches_one])
+        client = self._make_client()
+        self._mock_http(client, self._make_mock(resp))
+        results = client.search_tasks(due_before="2026-06-01T00:00:00", progress="completed")
+        assert [r["id"] for r in results] == ["both"]
+
+    def _task_query_unsupported_http_error(
+        self, error_type="urn:ietf:params:jmap:error:unknownCapability"
+    ):
+        mock_resp = self._make_mock({})
+        mock_resp.status_code = 400
+        mock_resp.json.return_value = {"type": error_type, "status": 400}
+        return _http_requests.HTTPError("HTTP 400", response=mock_resp)
+
+    def test_search_tasks_falls_back_when_server_rejects_tasks_capability(self, monkeypatch):
+        """Gate the ultrareview finding: search_tasks must not simply raise
+        when the server rejects the whole tasks capability at the request
+        level (confirmed live: Cyrus's unknownCapability, Stalwart's
+        notRequest); it must try Task/get instead, the same fallback shape
+        get_availability already uses for an unsupported method."""
+        client = self._make_client()
+        fallback_resp = self._get_response([self._MINIMAL_TASK])
+
+        def side_effect(*args, **kwargs):
+            if not hasattr(side_effect, "called"):
+                side_effect.called = True
+                raise self._task_query_unsupported_http_error()
+            return self._make_mock(fallback_resp)
+
+        self._mock_http(client, side_effect=side_effect)
+        results = client.search_tasks()
+        assert [r["id"] for r in results] == ["task1"]
+
+    def test_search_tasks_fallback_matches_text_against_title(self, monkeypatch):
+        client = self._make_client()
+        matching = {**self._MINIMAL_TASK, "id": "match", "title": "Buy groceries"}
+        other = {**self._MINIMAL_TASK, "id": "other", "title": "File taxes"}
+        fallback_resp = self._get_response([matching, other])
+
+        def side_effect(*args, **kwargs):
+            if not hasattr(side_effect, "called"):
+                side_effect.called = True
+                raise self._task_query_unsupported_http_error()
+            return self._make_mock(fallback_resp)
+
+        self._mock_http(client, side_effect=side_effect)
+        results = client.search_tasks(text="groceries")
+        assert [r["id"] for r in results] == ["match"]
+
+    def test_search_tasks_fallback_combines_with_due_filter(self, monkeypatch):
+        client = self._make_client()
+        matching = {
+            **self._MINIMAL_TASK,
+            "id": "match",
+            "title": "Buy groceries",
+            "due": "2026-01-01T00:00:00",
+        }
+        wrong_due = {
+            **self._MINIMAL_TASK,
+            "id": "wrong-due",
+            "title": "Buy groceries",
+            "due": "2026-12-01T00:00:00",
+        }
+        fallback_resp = self._get_response([matching, wrong_due])
+
+        def side_effect(*args, **kwargs):
+            if not hasattr(side_effect, "called"):
+                side_effect.called = True
+                raise self._task_query_unsupported_http_error()
+            return self._make_mock(fallback_resp)
+
+        self._mock_http(client, side_effect=side_effect)
+        results = client.search_tasks(text="groceries", due_before="2026-06-01T00:00:00")
+        assert [r["id"] for r in results] == ["match"]
+
+    def test_search_tasks_does_not_fall_back_on_unrelated_http_error(self, monkeypatch):
+        client = self._make_client()
+        mock_resp = self._make_mock({})
+        mock_resp.status_code = 500
+        mock_resp.json.return_value = {"type": "serverFail"}
+        error = _http_requests.HTTPError("HTTP 500", response=mock_resp)
+        self._mock_http(client, side_effect=error)
+        with pytest.raises(_http_requests.HTTPError):
+            client.search_tasks()
+
+    def test_search_tasks_falls_back_on_unknown_method(self, monkeypatch):
+        """Gate the scenario the fallback is actually built for: a server
+        that supports the tasks capability and Task/get but specifically
+        hasn't implemented Task/query (a JMAPMethodError, not a request-level
+        HTTPError)."""
+        client = self._make_client()
+        error_resp = _error_response("unknownMethod", "task-query-0")
+        fallback_resp = self._get_response([self._MINIMAL_TASK])
+        self._mock_http(
+            client, side_effect=[self._make_mock(error_resp), self._make_mock(fallback_resp)]
+        )
+        results = client.search_tasks()
+        assert [r["id"] for r in results] == ["task1"]
 
     def test_get_task_lists_returns_list(self):
         resp = self._tasklist_response([self._MINIMAL_TASKLIST])
@@ -6231,23 +6688,14 @@ class TestAsyncJMAPClient:
         return _query_get_response(items)
 
     def _changes_resp(self, created=None, updated=None, destroyed=None, has_more=False):
-        return {
-            "methodResponses": [
-                [
-                    "CalendarEvent/changes",
-                    {
-                        "accountId": _USERNAME,
-                        "oldState": "state-1",
-                        "newState": "state-2",
-                        "hasMoreChanges": has_more,
-                        "created": created or [],
-                        "updated": updated or [],
-                        "destroyed": destroyed or [],
-                    },
-                    "ev-changes-0",
-                ]
-            ]
-        }
+        return _changes_response(
+            "CalendarEvent/changes",
+            "ev-changes-0",
+            created=created,
+            updated=updated,
+            destroyed=destroyed,
+            has_more=has_more,
+        )
 
     def _task_set_resp(self, **kwargs):
         return _set_response("Task/set", "task-set-0", **kwargs)
@@ -6844,15 +7292,7 @@ class TestAsyncJMAPClient:
 
     @pytest.mark.asyncio
     async def test_get_sync_token_returns_state(self, monkeypatch):
-        resp = {
-            "methodResponses": [
-                [
-                    "CalendarEvent/get",
-                    {"accountId": _USERNAME, "state": "tok-async-1", "list": [], "notFound": []},
-                    "ev-get-0",
-                ]
-            ]
-        }
+        resp = _get_response("CalendarEvent/get", "ev-get-0", [], state="tok-async-1")
         self._patch_async_session(monkeypatch, resp)
         token = await self._make_client().get_sync_token()
         assert token == "tok-async-1"
@@ -6973,6 +7413,263 @@ class TestAsyncJMAPClient:
         await self._make_client().get_task_lists()
         assert TASK_CAPABILITY in captured["json"]["using"]
         assert CALENDAR_CAPABILITY not in captured["json"]["using"]
+
+    def _task_changes_resp(self, created=None, updated=None, destroyed=None, has_more=False):
+        return _changes_response(
+            "Task/changes",
+            "task-changes-0",
+            created=created,
+            updated=updated,
+            destroyed=destroyed,
+            has_more=has_more,
+        )
+
+    def _task_query_resp(self, items):
+        return _query_get_response(
+            items,
+            query_method="Task/query",
+            query_call_id="task-query-0",
+            get_method="Task/get",
+            get_call_id="task-get-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_task_sync_token_returns_state(self, monkeypatch):
+        """Gate the ultrareview finding: get_task_sync_token must read
+        Task/get's own state, not TaskList/get's."""
+        resp = _get_response("Task/get", "task-get-0", [], state="tok-async-1")
+        self._patch_async_session(monkeypatch, resp)
+        token = await self._make_client().get_task_sync_token()
+        assert token == "tok-async-1"
+
+    @pytest.mark.asyncio
+    async def test_get_task_sync_token_sends_task_get_not_tasklist_get(self, monkeypatch):
+        resp = self._task_get_resp([])
+        client, captured = self._capturing_async_session(monkeypatch, resp)
+        await client.get_task_sync_token()
+        assert captured["json"]["methodCalls"][0][0] == "Task/get"
+
+    @pytest.mark.asyncio
+    async def test_get_task_sync_token_sends_empty_ids(self, monkeypatch):
+        resp = self._task_get_resp([])
+        client, captured = self._capturing_async_session(monkeypatch, resp)
+        await client.get_task_sync_token()
+        assert captured["json"]["methodCalls"][0][1]["ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_tasks_no_changes(self, monkeypatch):
+        self._patch_async_session(monkeypatch, self._task_changes_resp())
+        added, modified, deleted, _ = await self._make_client().get_tasks_by_sync_token("state-1")
+        assert added == [] and modified == [] and deleted == []
+
+    @pytest.mark.asyncio
+    async def test_get_tasks_deleted_returns_ids(self, monkeypatch):
+        self._patch_async_session(monkeypatch, self._task_changes_resp(destroyed=["task1"]))
+        added, modified, deleted, _ = await self._make_client().get_tasks_by_sync_token("state-1")
+        assert deleted == ["task1"] and added == [] and modified == []
+
+    @pytest.mark.asyncio
+    async def test_get_tasks_added_returns_dicts(self, monkeypatch):
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(
+            side_effect=[
+                self._make_mock_response(self._task_changes_resp(created=["task-async-1"])),
+                self._make_mock_response(self._task_get_resp([self._MINIMAL_TASK])),
+            ]
+        )
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        added, modified, deleted, _ = await self._make_client().get_tasks_by_sync_token("state-1")
+        assert len(added) == 1
+        assert isinstance(added[0], dict)
+        assert added[0]["id"] == "task-async-1"
+        assert modified == [] and deleted == []
+
+    @pytest.mark.asyncio
+    async def test_get_tasks_modified_returns_dicts(self, monkeypatch):
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(
+            side_effect=[
+                self._make_mock_response(self._task_changes_resp(updated=["task-async-1"])),
+                self._make_mock_response(self._task_get_resp([self._MINIMAL_TASK])),
+            ]
+        )
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        added, modified, deleted, _ = await self._make_client().get_tasks_by_sync_token("state-1")
+        assert len(modified) == 1
+        assert isinstance(modified[0], dict)
+        assert modified[0]["id"] == "task-async-1"
+        assert added == [] and deleted == []
+
+    @pytest.mark.asyncio
+    async def test_get_tasks_has_more_raises(self, monkeypatch):
+        resp = self._task_changes_resp(created=["task-async-1"], has_more=True)
+        self._patch_async_session(monkeypatch, resp)
+        with pytest.raises(JMAPMethodError) as exc_info:
+            await self._make_client().get_tasks_by_sync_token("state-1")
+        assert exc_info.value.error_type == "serverPartialFail"
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_sends_text_server_side(self, monkeypatch):
+        client, captured = self._capturing_async_session(monkeypatch, self._task_query_resp([]))
+        await client.search_tasks(text="groceries")
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert query_args["filter"] == {"text": "groceries"}
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_returns_dicts(self, monkeypatch):
+        resp = self._task_query_resp([self._MINIMAL_TASK])
+        self._patch_async_session(monkeypatch, resp)
+        results = await self._make_client().search_tasks()
+        assert len(results) == 1
+        assert isinstance(results[0], dict)
+        assert results[0]["id"] == "task-async-1"
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_due_before_filters_client_side(self, monkeypatch):
+        early = {**self._MINIMAL_TASK, "id": "early", "due": "2026-01-01T00:00:00"}
+        late = {**self._MINIMAL_TASK, "id": "late", "due": "2026-06-01T00:00:00"}
+        resp = self._task_query_resp([early, late])
+        self._patch_async_session(monkeypatch, resp)
+        results = await self._make_client().search_tasks(due_before="2026-03-01T00:00:00")
+        assert [r["id"] for r in results] == ["early"]
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_progress_defaults_absent_to_needs_action(self, monkeypatch):
+        no_progress = {k: v for k, v in self._MINIMAL_TASK.items() if k != "progress"}
+        resp = self._task_query_resp([no_progress])
+        self._patch_async_session(monkeypatch, resp)
+        results = await self._make_client().search_tasks(progress="needs-action")
+        assert [r["id"] for r in results] == [no_progress["id"]]
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_no_filter_sends_no_filter_argument(self, monkeypatch):
+        client, captured = self._capturing_async_session(monkeypatch, self._task_query_resp([]))
+        await client.search_tasks()
+        query_args = captured["json"]["methodCalls"][0][1]
+        assert "filter" not in query_args
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_due_after_filters_client_side(self, monkeypatch):
+        early = {**self._MINIMAL_TASK, "id": "early", "due": "2026-01-01T00:00:00"}
+        late = {**self._MINIMAL_TASK, "id": "late", "due": "2026-06-01T00:00:00"}
+        resp = self._task_query_resp([early, late])
+        self._patch_async_session(monkeypatch, resp)
+        results = await self._make_client().search_tasks(due_after="2026-03-01T00:00:00")
+        assert [r["id"] for r in results] == ["late"]
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_due_filter_excludes_task_with_no_due(self, monkeypatch):
+        no_due = {**self._MINIMAL_TASK, "id": "no-due"}
+        assert "due" not in no_due
+        resp = self._task_query_resp([no_due])
+        self._patch_async_session(monkeypatch, resp)
+        assert await self._make_client().search_tasks(due_before="2026-06-01T00:00:00") == []
+        self._patch_async_session(monkeypatch, resp)
+        assert await self._make_client().search_tasks(due_after="2026-01-01T00:00:00") == []
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_progress_matches_explicit_value(self, monkeypatch):
+        done = {**self._MINIMAL_TASK, "id": "done", "progress": "completed"}
+        pending = {**self._MINIMAL_TASK, "id": "pending", "progress": "needs-action"}
+        resp = self._task_query_resp([done, pending])
+        self._patch_async_session(monkeypatch, resp)
+        results = await self._make_client().search_tasks(progress="completed")
+        assert [r["id"] for r in results] == ["done"]
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_combined_filters_require_all_to_pass(self, monkeypatch):
+        matches_both = {
+            **self._MINIMAL_TASK,
+            "id": "both",
+            "due": "2026-01-01T00:00:00",
+            "progress": "completed",
+        }
+        matches_one = {
+            **self._MINIMAL_TASK,
+            "id": "one",
+            "due": "2026-01-01T00:00:00",
+            "progress": "needs-action",
+        }
+        resp = self._task_query_resp([matches_both, matches_one])
+        self._patch_async_session(monkeypatch, resp)
+        results = await self._make_client().search_tasks(
+            due_before="2026-06-01T00:00:00", progress="completed"
+        )
+        assert [r["id"] for r in results] == ["both"]
+
+    def _task_query_unsupported_http_error(
+        self, error_type="urn:ietf:params:jmap:error:unknownCapability"
+    ):
+        mock_resp = self._make_mock_response({})
+        mock_resp.status_code = 400
+        mock_resp.json.return_value = {"type": error_type, "status": 400}
+        return _http_requests.HTTPError("HTTP 400", response=mock_resp)
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_falls_back_when_server_rejects_tasks_capability(self, monkeypatch):
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(
+            side_effect=[
+                self._task_query_unsupported_http_error(),
+                self._make_mock_response(self._task_get_resp([self._MINIMAL_TASK])),
+            ]
+        )
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        results = await self._make_client().search_tasks()
+        assert [r["id"] for r in results] == ["task-async-1"]
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_fallback_matches_text_against_title(self, monkeypatch):
+        matching = {**self._MINIMAL_TASK, "id": "match", "title": "Buy groceries"}
+        other = {**self._MINIMAL_TASK, "id": "other", "title": "File taxes"}
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(
+            side_effect=[
+                self._task_query_unsupported_http_error(),
+                self._make_mock_response(self._task_get_resp([matching, other])),
+            ]
+        )
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        results = await self._make_client().search_tasks(text="groceries")
+        assert [r["id"] for r in results] == ["match"]
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_does_not_fall_back_on_unrelated_http_error(self, monkeypatch):
+        mock_resp = self._make_mock_response({})
+        mock_resp.status_code = 500
+        mock_resp.json.return_value = {"type": "serverFail"}
+        error = _http_requests.HTTPError("HTTP 500", response=mock_resp)
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(side_effect=error)
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        with pytest.raises(_http_requests.HTTPError):
+            await self._make_client().search_tasks()
+
+    @pytest.mark.asyncio
+    async def test_search_tasks_falls_back_on_unknown_method(self, monkeypatch):
+        error_resp = _error_response("unknownMethod", "task-query-0")
+        mock_http = MagicMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.post = AsyncMock(
+            side_effect=[
+                self._make_mock_response(error_resp),
+                self._make_mock_response(self._task_get_resp([self._MINIMAL_TASK])),
+            ]
+        )
+        monkeypatch.setattr("calendaring_jmap.async_client.AsyncSession", lambda: mock_http)
+        results = await self._make_client().search_tasks()
+        assert [r["id"] for r in results] == ["task-async-1"]
 
     def _capturing_async_session(self, monkeypatch, resp_json):
         captured = {}
@@ -7749,15 +8446,7 @@ class TestAsyncJMAPClient:
 
     @pytest.mark.asyncio
     async def test_get_sync_token_sends_empty_ids(self, monkeypatch):
-        resp = {
-            "methodResponses": [
-                [
-                    "CalendarEvent/get",
-                    {"accountId": _USERNAME, "state": "tok-1", "list": [], "notFound": []},
-                    "ev-get-0",
-                ]
-            ]
-        }
+        resp = _get_response("CalendarEvent/get", "ev-get-0", [], state="tok-1")
         client, captured = self._capturing_async_session(monkeypatch, resp)
         await client.get_sync_token()
         assert captured["json"]["methodCalls"][0][1]["ids"] == []
