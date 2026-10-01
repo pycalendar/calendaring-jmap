@@ -2046,6 +2046,39 @@ class TestTaskSearchFilters:
             task, "2026-06-01T00:00:00", None, "completed"
         )
 
+    def test_is_task_query_unsupported_http_error_false_for_non_http_error(self):
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(
+            ValueError("not an HTTPError")
+        )
+
+    def test_is_task_query_unsupported_http_error_false_when_no_response_attached(self):
+        error = _http_requests.HTTPError("no response")
+        assert error.response is None
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_is_task_query_unsupported_http_error_false_for_non_400_status(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        error = _http_requests.HTTPError("HTTP 500", response=mock_resp)
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_is_task_query_unsupported_http_error_false_for_non_json_body(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.json.side_effect = ValueError("not JSON")
+        error = _http_requests.HTTPError("HTTP 400", response=mock_resp)
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_is_task_query_unsupported_http_error_false_for_unrelated_400_error_type(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.json.return_value = {"type": "urn:ietf:params:jmap:error:invalidArguments"}
+        error = _http_requests.HTTPError("HTTP 400", response=mock_resp)
+        assert not _JMAPClientBase._is_task_query_unsupported_http_error(error)
+
+    def test_should_fall_back_from_task_query_false_for_unrelated_exception(self):
+        assert not _JMAPClientBase._should_fall_back_from_task_query(ValueError("unrelated"))
+
 
 from calendaring_jmap import get_jmap_client
 
