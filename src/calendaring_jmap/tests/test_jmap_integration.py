@@ -83,6 +83,39 @@ _cyrus_skip = pytest.mark.skipif(
 _DEFAULT_ICAL_START = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
 
 
+def _vevent_block(
+    uid: str,
+    title: str,
+    start: datetime,
+    duration: timedelta,
+    extra_lines: str = "",
+    recurrence_id: datetime | None = None,
+) -> str:
+    """Build one ``BEGIN:VEVENT``...``END:VEVENT`` block.
+
+    Shared by :func:`_vevent_ical` (one VEVENT, the common case) and
+    :func:`_recurring_override_ical` (a master VEVENT plus one
+    RECURRENCE-ID override VEVENT, which needs two blocks sharing one UID
+    rather than :func:`_vevent_ical`'s own fresh ``uuid.uuid4()`` per call).
+    """
+    end = start + duration
+    recurrence_id_line = (
+        f"RECURRENCE-ID:{recurrence_id.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        if recurrence_id is not None
+        else ""
+    )
+    return (
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        f"SUMMARY:{title}\r\n"
+        f"{recurrence_id_line}"
+        f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"{extra_lines}"
+        "END:VEVENT\r\n"
+    )
+
+
 def _vevent_ical(
     title: str,
     start: datetime,
@@ -95,19 +128,12 @@ def _vevent_ical(
     :func:`_invite_ical`, which each add their own ``extra_lines``
     (``RRULE``, ``ORGANIZER``/``ATTENDEE``) before ``END:VEVENT``.
     """
-    end = start + duration
     uid = str(uuid.uuid4())
     return (
         "BEGIN:VCALENDAR\r\n"
         "VERSION:2.0\r\n"
         "PRODID:-//test//test//EN\r\n"
-        "BEGIN:VEVENT\r\n"
-        f"UID:{uid}\r\n"
-        f"SUMMARY:{title}\r\n"
-        f"DTSTART:{start.strftime('%Y%m%dT%H%M%SZ')}\r\n"
-        f"DTEND:{end.strftime('%Y%m%dT%H%M%SZ')}\r\n"
-        f"{extra_lines}"
-        "END:VEVENT\r\n"
+        f"{_vevent_block(uid, title, start, duration, extra_lines)}"
         "END:VCALENDAR\r\n"
     )
 
@@ -151,6 +177,45 @@ def _attachment_ical(
 ) -> str:
     extra_lines = "ATTACH:https://example.com/doc.pdf\r\n"
     return _vevent_ical(title, start or _DEFAULT_ICAL_START, timedelta(hours=1), extra_lines)
+
+
+def _recurring_override_ical(
+    title: str,
+    master_start: datetime,
+    override_start: datetime,
+    duration: timedelta = timedelta(hours=1),
+    master_extra_lines: str = "",
+    override_extra_lines: str = "",
+) -> str:
+    """Build a VCALENDAR string with a weekly-recurring master VEVENT plus
+    one RECURRENCE-ID override child VEVENT.
+
+    None of ``_minimal_ical``/``_recurring_ical``/``_invite_ical`` support a
+    second, override VEVENT; they each build exactly one via
+    :func:`_vevent_ical`. Shared by every recurrenceOverrides integration
+    test that needs a real override instance round-tripped through a live
+    server.
+    """
+    uid = str(uuid.uuid4())
+    master_block = _vevent_block(
+        uid, title, master_start, duration, f"RRULE:FREQ=WEEKLY;COUNT=4\r\n{master_extra_lines}"
+    )
+    override_block = _vevent_block(
+        uid,
+        title,
+        override_start,
+        duration,
+        override_extra_lines,
+        recurrence_id=override_start,
+    )
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//test//test//EN\r\n"
+        f"{master_block}"
+        f"{override_block}"
+        "END:VCALENDAR\r\n"
+    )
 
 
 def _attendee_participation_status(event: JMAPCalendarObject, email: str) -> str:
@@ -870,6 +935,158 @@ class TestJMAPEventIntegration:
                 assert "ATTACH" in fetched
                 assert "https://example.com/report.pdf" in fetched
                 assert "application/pdf" in fetched
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_recurrence_override_combines_multiple_property_changes(
+        self, event_client, event_calendar_id
+    ):
+        """A single override instance changing status, free/busy status,
+        keywords, location, and virtualLocations together round-trips
+        through CalendarEvent/set and CalendarEvent/get with every change
+        preserved.
+        """
+        master_start = datetime(2026, 8, 3, 9, 0, 0, tzinfo=timezone.utc)
+        override_start = master_start + timedelta(weeks=1)
+        ical = _recurring_override_ical(
+            "Override Properties Master",
+            master_start,
+            override_start,
+            master_extra_lines="LOCATION:Room 100\r\nCATEGORIES:planning\r\n",
+            override_extra_lines=(
+                "STATUS:CANCELLED\r\nTRANSP:TRANSPARENT\r\n"
+                "CATEGORIES:urgent,escalated\r\nLOCATION:Room 200\r\n"
+                "CONFERENCE;VALUE=URI;FEATURE=PHONE:tel:+1-555-555-5555\r\n"
+            ),
+        )
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            obj = event_client.get_event(event_id)
+            data = obj.get_data()
+            overrides = data.get("recurrenceOverrides") or {}
+            assert overrides, "recurrenceOverrides was dropped entirely on read-back"
+
+            # Asserting on the raw patch dict directly is unreliable: Cyrus
+            # returns recurrenceOverrides patches as flattened per-key
+            # JSON-Pointer entries (e.g. "keywords/urgent": true), not the
+            # single whole-map "keywords": {...} key this converter itself
+            # always sends (RFC 8984 section 1.4.9 permits both shapes).
+            # jscal_to_ical resolves either shape identically, so assert on
+            # its output instead, which is what every caller of this package
+            # actually consumes.
+            fetched = jscal_to_ical(data)
+            child = fetched.split("BEGIN:VEVENT")[2]
+            assert "STATUS:CANCELLED" in child
+            assert "TRANSP:TRANSPARENT" in child
+            assert "URGENT" in child.upper() and "ESCALATED" in child.upper()
+            assert "LOCATION:Room 200" in child
+            assert "CONFERENCE" in child
+            assert "PHONE" in child
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_recurrence_override_participant_and_alert_server_quirks(
+        self, event_client, event_calendar_id, server
+    ):
+        """The same attendee-role-drop and alert-action-drop quirks already
+        known for top-level participants/alerts (see _invite_ical's own
+        docstring, and the Alert action default in
+        jscal_to_ical._alert_to_valarm) reproduce identically inside a
+        recurrenceOverrides patch on both Cyrus and Stalwart. Pinned here so
+        a future server fix is caught rather than silently going
+        unnoticed.
+
+        The master VEVENT here has no ORGANIZER/ATTENDEE/VALARM of its own,
+        so Cyrus returns this patch's participants/alerts as literal
+        whole-map keys, not the flattened per-key JSON-Pointer form it uses
+        when the master already has its own value for that property
+        (confirmed live separately; see jscal_to_ical's own
+        _resolve_flattened_map_patches for that shape). Reading the patch
+        dict directly below, as this test does, is reliable here because
+        of that; test_recurrence_override_combines_multiple_property_changes
+        reads the fetched data through jscal_to_ical instead because its
+        master does have its own values for the properties it overrides.
+        """
+        master_start = datetime(2026, 8, 10, 9, 0, 0, tzinfo=timezone.utc)
+        override_start = master_start + timedelta(weeks=1)
+        ical = _recurring_override_ical(
+            "Override Quirks Master",
+            master_start,
+            override_start,
+            override_extra_lines=(
+                "ORGANIZER:mailto:organizer@example.com\r\n"
+                "ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:"
+                "mailto:attendee@example.com\r\n"
+                "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n"
+            ),
+        )
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            obj = event_client.get_event(event_id)
+            overrides = obj.get_data().get("recurrenceOverrides") or {}
+            assert overrides, "recurrenceOverrides was dropped entirely on read-back"
+            patch = next(iter(overrides.values()))
+
+            participants = patch.get("participants") or {}
+            attendee = next(
+                p for p in participants.values() if p.get("email") == "attendee@example.com"
+            )
+            roles = attendee.get("roles") or {}
+            assert "attendee" not in roles, (
+                f"{server}: override participant kept its attendee role; "
+                "if this now holds, the server may have fixed the "
+                "long-standing roles-drop quirk (see #57) and this "
+                "assertion should be updated."
+            )
+
+            alerts = patch.get("alerts") or {}
+            assert alerts, "alert was dropped entirely from the override patch"
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_recurrence_override_location_patch_resolves_when_master_has_its_own_location(
+        self, event_client, event_calendar_id, server
+    ):
+        """Confirmed live on both servers: Cyrus returns a map-typed
+        recurrenceOverrides property (locations, participants,
+        virtualLocations, alerts, keywords) as flattened per-key
+        JSON-Pointer entries specifically when the master event already has
+        its own value for that property; with no master baseline, Cyrus
+        sends the override's whole map under the literal key instead (the
+        same shape Stalwart always uses). test_recurrence_override_
+        participant_and_alert_server_quirks above exercises the
+        no-baseline shape; this test exercises the has-a-baseline, flattened
+        shape specifically, through jscal_to_ical, which this converter
+        must resolve correctly either way.
+        """
+        master_start = datetime(2026, 8, 24, 9, 0, 0, tzinfo=timezone.utc)
+        override_start = master_start + timedelta(weeks=1)
+        ical = _recurring_override_ical(
+            "Location Baseline Test",
+            master_start,
+            override_start,
+            master_extra_lines="LOCATION:Room 100\r\n",
+            override_extra_lines="LOCATION:Room 200\r\n",
+        )
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            obj = event_client.get_event(event_id)
+            data = obj.get_data()
+            overrides = data.get("recurrenceOverrides") or {}
+            assert overrides, "recurrenceOverrides was dropped entirely on read-back"
+            patch = next(iter(overrides.values()))
+            if server == "cyrus":
+                assert "locations" not in patch, (
+                    "cyrus: expected the flattened per-key form here since "
+                    "the master has its own LOCATION; if this now holds, "
+                    "Cyrus may have changed this behavior and the test "
+                    "comment should be updated."
+                )
+                assert any(k.startswith("locations/") for k in patch)
+
+            fetched = jscal_to_ical(data)
+            child = fetched.split("BEGIN:VEVENT")[2]
+            assert "LOCATION:Room 200" in child
         finally:
             event_client.delete_event(event_id)
 

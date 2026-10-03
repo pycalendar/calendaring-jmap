@@ -1,0 +1,1 @@
+Alert ``trigger`` values are now emitted and read as proper ``OffsetTrigger``/``AbsoluteTrigger`` objects per RFC 8984, instead of a bare duration or date-time string that a spec-compliant server rejects.

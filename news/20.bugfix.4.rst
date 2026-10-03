@@ -1,0 +1,1 @@
+``ical_to_jscal`` and ``jscal_to_ical`` now convert ``CONFERENCE`` properties to and from JSCalendar's ``virtualLocations``, at both the master event level and inside recurrence override patches, instead of dropping video/phone conference details entirely.

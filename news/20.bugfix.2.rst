@@ -1,0 +1,1 @@
+``jscal_to_ical`` now resolves a recurrence override patch returned as flattened per-key JSON-Pointer entries (confirmed on Cyrus, e.g. ``"keywords/urgent": true``), in addition to the whole-map replacement form this package itself always sends.
