@@ -13,6 +13,7 @@ directly to CalendarEvent/set.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import date, datetime, timedelta
@@ -338,11 +339,33 @@ def _attendee_to_participant(attendee) -> tuple[str, dict]:
     return pid, p
 
 
+def _component_to_participants(component) -> dict:
+    """Build a JSCalendar participants map from a VEVENT-shaped component's
+    own ``ORGANIZER`` and ``ATTENDEE`` properties.
+
+    Shared by the master event and each recurrence override's child VEVENT
+    in :func:`ical_to_jscal`, since both need the identical "one ORGANIZER
+    plus zero or more ATTENDEEs" shape built the same way.
+    """
+    participants: dict = {}
+    organizer = component.get("ORGANIZER")
+    if organizer is not None:
+        pid, p = _organizer_to_participant(organizer)
+        participants[pid] = p
+    for attendee in _as_list(component.get("ATTENDEE")):
+        pid, p = _attendee_to_participant(attendee)
+        participants[pid] = p
+    return participants
+
+
 def _valarm_to_alert(alarm) -> tuple[str, dict] | None:
     """Convert a VALARM component to a (alert_id, Alert dict) tuple.
 
-    Trigger is emitted as a plain SignedDuration string (e.g. "-PT15M") or
-    UTCDateTime string per the JSCalendar Alert spec (:rfc:`8984#section-4.5.2`).
+    ``trigger`` is an OffsetTrigger or AbsoluteTrigger object, not a bare
+    string (:rfc:`8984#section-4.5.2`): ``{"@type": "OffsetTrigger",
+    "offset": "-PT15M", "relativeTo": "start"}`` for a relative VALARM
+    TRIGGER, or ``{"@type": "AbsoluteTrigger", "when": "..."}`` for an
+    absolute one.
 
     Returns ``None`` if the VALARM has no ``TRIGGER``: mandatory per
     :rfc:`5545#section-3.6.6` and :rfc:`8984#section-4.5.2` alike, but not
@@ -358,23 +381,46 @@ def _valarm_to_alert(alarm) -> tuple[str, dict] | None:
 
     alert_id = str(uuid.uuid4())
     action = str(alarm.get("ACTION", "display")).lower()
-    alert: dict = {"action": action}
+    alert: dict = {"@type": "Alert", "action": action}
 
     trigger_val = trigger_prop.dt
     if isinstance(trigger_val, timedelta):
-        # Relative trigger: convert to SignedDuration string
-        alert["trigger"] = _timedelta_to_duration(trigger_val)
+        offset_trigger: dict = {
+            "@type": "OffsetTrigger",
+            "offset": _timedelta_to_duration(trigger_val),
+        }
         if str(trigger_prop.params.get("RELATED", "START")).upper() == "END":
-            alert["relativeTo"] = "end"
+            offset_trigger["relativeTo"] = "end"
+        alert["trigger"] = offset_trigger
     elif isinstance(trigger_val, datetime):
-        # Absolute trigger: UTCDateTime string
-        alert["trigger"] = trigger_val.strftime(UTC_DATETIME_FORMAT)
+        alert["trigger"] = {
+            "@type": "AbsoluteTrigger",
+            "when": trigger_val.strftime(UTC_DATETIME_FORMAT),
+        }
 
     description = alarm.get("DESCRIPTION")
     if description:
         alert["description"] = str(description)
 
     return alert_id, alert
+
+
+def _component_to_alerts(component) -> dict:
+    """Build a JSCalendar alerts map from a VEVENT-shaped component's own
+    ``VALARM`` subcomponents.
+
+    Shared by the master event and each recurrence override's child VEVENT
+    in :func:`ical_to_jscal`, since both need the identical "convert every
+    VALARM, skipping ones with no TRIGGER" shape built the same way.
+    """
+    alarms = [c for c in component.subcomponents if getattr(c, "name", None) == "VALARM"]
+    alerts: dict = {}
+    for alarm in alarms:
+        converted = _valarm_to_alert(alarm)
+        if converted is not None:
+            alert_id, alert = converted
+            alerts[alert_id] = alert
+    return alerts
 
 
 def _attach_to_link(attach) -> tuple[str, dict]:
@@ -416,6 +462,51 @@ def _location_str_to_jscal(location_str: str) -> dict:
     return {str(uuid.uuid4()): {"name": location_str}}
 
 
+def _conference_to_virtual_location(conference) -> tuple[str, dict]:
+    """Convert a CONFERENCE property to a (virtual_location_id, VirtualLocation dict) tuple.
+
+    Per draft-ietf-calext-jscalendar-icalendar section 2.3.10: the property
+    value converts to ``uri`` (mandatory per :rfc:`8984#section-4.2.6`), the
+    ``LABEL`` parameter (:rfc:`7986#section-6.4`) to ``name``, and the
+    ``FEATURE`` parameter (:rfc:`7986#section-6.3`, comma-separated when
+    more than one value is present) to a ``features`` map of lowercased
+    feature names to ``True``. ``icalendar`` returns a bare string for
+    ``FEATURE`` when exactly one value is present and a list for more than
+    one, the same single-vs-list inconsistency :func:`_as_list` already
+    normalizes for ``ATTENDEE``/``ATTACH``.
+
+    ``VirtualLocation``'s ``description`` property is out of scope: the
+    draft (section 3.7) only converts it from a ``VCONFERENCE`` component's
+    own ``DESCRIPTION``/``STYLED-DESCRIPTION``, a separate component this
+    converter does not read or emit, matching :func:`_attach_to_link`'s own
+    narrower-than-the-draft precedent.
+    """
+    virtual_location_id = str(uuid.uuid4())
+    vloc: dict = {"@type": "VirtualLocation", "uri": str(conference)}
+    label = conference.params.get("LABEL")
+    if label:
+        vloc["name"] = str(label)
+    features = _as_list(conference.params.get("FEATURE"))
+    if features:
+        vloc["features"] = {str(f).lower(): True for f in features}
+    return virtual_location_id, vloc
+
+
+def _component_to_virtual_locations(component) -> dict:
+    """Build a JSCalendar virtualLocations map from a VEVENT-shaped
+    component's own ``CONFERENCE`` properties.
+
+    Shared by the master event and each recurrence override's child VEVENT
+    in :func:`ical_to_jscal`, since both need the identical "convert every
+    CONFERENCE property" shape built the same way.
+    """
+    virtual_locations: dict = {}
+    for conference in _as_list(component.get("CONFERENCE")):
+        vloc_id, vloc = _conference_to_virtual_location(conference)
+        virtual_locations[vloc_id] = vloc
+    return virtual_locations
+
+
 def _categories_to_keywords(categories_prop) -> dict:
     """Convert a CATEGORIES property to a JSCalendar keywords map.
 
@@ -438,6 +529,28 @@ def _categories_to_keywords(categories_prop) -> dict:
         values = [v.strip() for v in raw.split(",") if v.strip()]
 
     return {v: True for v in values}
+
+
+def _map_values_differ(child_map: dict, master_map: dict) -> bool:
+    """Return whether two ``Id[X]``-shaped JSCalendar maps (``participants``,
+    ``locations``, ``alerts``) have different content, ignoring their keys
+    and insertion order.
+
+    ``_location_str_to_jscal``/``_organizer_to_participant``/
+    ``_attendee_to_participant``/``_valarm_to_alert`` each generate a fresh
+    ``uuid.uuid4()`` map key on every call, so two maps built from identical
+    source data never share keys; a plain ``child_map != master_map`` check
+    would always report a difference even when nothing actually changed.
+    Comparing by sorted canonical JSON of the values also tolerates the two
+    maps having their entries in a different order, which can happen on a
+    round trip through :func:`~calendaring_jmap.convert.jscal_to_ical.jscal_to_ical`
+    without the content having actually changed.
+    """
+
+    def canonical(m: dict) -> list[str]:
+        return sorted(json.dumps(v, sort_keys=True) for v in m.values())
+
+    return canonical(child_map) != canonical(master_map)
 
 
 def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
@@ -610,24 +723,23 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
     if location:
         jscal["locations"] = _location_str_to_jscal(str(location))
 
+    virtual_locations = _component_to_virtual_locations(master)
+    if virtual_locations:
+        jscal["virtualLocations"] = virtual_locations
+
     status = master.get("STATUS")
     if status:
         jscal_status = _STATUS_ICAL_TO_JSCAL.get(str(status).upper())
         if jscal_status:
             jscal["status"] = jscal_status
 
-    participants: dict = {}
-    organizer = master.get("ORGANIZER")
-    if organizer is not None:
-        pid, p = _organizer_to_participant(organizer)
-        participants[pid] = p
-
-    for attendee in _as_list(master.get("ATTENDEE")):
-        pid, p = _attendee_to_participant(attendee)
-        participants[pid] = p
-
+    participants = _component_to_participants(master)
     if participants:
         jscal["participants"] = participants
+
+    alerts = _component_to_alerts(master)
+    if alerts:
+        jscal["alerts"] = alerts
 
     # RFC 8984 §4.3.3 defines "recurrenceRules" as RecurrenceRule[], since an
     # event can in principle have more than one RRULE. Neither test server
@@ -674,21 +786,51 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
         child_description = child.get("DESCRIPTION")
         if child_description and str(child_description) != jscal.get("description"):
             patch["description"] = str(child_description)
+
+        child_status = child.get("STATUS")
+        master_status = jscal.get("status") or "confirmed"
+        if child_status:
+            child_jscal_status = _STATUS_ICAL_TO_JSCAL.get(str(child_status).upper())
+            if child_jscal_status and child_jscal_status != master_status:
+                patch["status"] = child_jscal_status
+
+        child_transp = child.get("TRANSP")
+        master_fb = jscal.get("freeBusyStatus") or "busy"
+        if child_transp and str(child_transp).upper() == "TRANSPARENT" and master_fb != "free":
+            patch["freeBusyStatus"] = "free"
+
+        child_categories = child.get("CATEGORIES")
+        if child_categories is not None:
+            child_kw = _categories_to_keywords(child_categories)
+            if child_kw != (jscal.get("keywords") or {}):
+                patch["keywords"] = child_kw
+
+        child_location = child.get("LOCATION")
+        if child_location:
+            child_loc = _location_str_to_jscal(str(child_location))
+            if _map_values_differ(child_loc, jscal.get("locations") or {}):
+                patch["locations"] = child_loc
+
+        child_virtual_locations = _component_to_virtual_locations(child)
+        if child_virtual_locations and _map_values_differ(
+            child_virtual_locations, jscal.get("virtualLocations") or {}
+        ):
+            patch["virtualLocations"] = child_virtual_locations
+
+        child_participants = _component_to_participants(child)
+        if child_participants and _map_values_differ(
+            child_participants, jscal.get("participants") or {}
+        ):
+            patch["participants"] = child_participants
+
+        child_alerts = _component_to_alerts(child)
+        if child_alerts and _map_values_differ(child_alerts, jscal.get("alerts") or {}):
+            patch["alerts"] = child_alerts
+
         recurrence_overrides[rid_key] = patch or {}
 
     if recurrence_overrides:
         jscal["recurrenceOverrides"] = recurrence_overrides
-
-    alarms = [c for c in master.subcomponents if getattr(c, "name", None) == "VALARM"]
-    if alarms:
-        alerts: dict = {}
-        for alarm in alarms:
-            converted = _valarm_to_alert(alarm)
-            if converted is not None:
-                alert_id, alert = converted
-                alerts[alert_id] = alert
-        if alerts:
-            jscal["alerts"] = alerts
 
     attaches = _as_list(master.get("ATTACH"))
     if attaches:

@@ -2912,7 +2912,7 @@ class TestIcalToJscal:
         result = ical_to_jscal(ical)
         assert "alerts" in result
         alert = next(iter(result["alerts"].values()))
-        assert alert["trigger"] == "-PT15M"
+        assert alert["trigger"] == {"@type": "OffsetTrigger", "offset": "-PT15M"}
         assert alert["action"] == "display"
 
     def test_valarm_absolute(self):
@@ -2928,7 +2928,8 @@ class TestIcalToJscal:
         result = ical_to_jscal(ical)
         assert "alerts" in result
         alert = next(iter(result["alerts"].values()))
-        assert alert["trigger"].endswith("Z")
+        assert alert["trigger"]["@type"] == "AbsoluteTrigger"
+        assert alert["trigger"]["when"].endswith("Z")
 
     def test_valarm_related_end(self):
         ical = _make_ical(
@@ -2941,8 +2942,11 @@ class TestIcalToJscal:
         )
         result = ical_to_jscal(ical)
         alert = next(iter(result["alerts"].values()))
-        assert alert["trigger"] == "-PT5M"
-        assert alert.get("relativeTo") == "end"
+        assert alert["trigger"] == {
+            "@type": "OffsetTrigger",
+            "offset": "-PT5M",
+            "relativeTo": "end",
+        }
 
     def test_attach_uri_form(self):
         ical = _make_ical(
@@ -3214,7 +3218,7 @@ class TestIcalToJscal:
         result = ical_to_jscal(ical)
         assert len(result["alerts"]) == 1
         alert = next(iter(result["alerts"].values()))
-        assert alert["trigger"] == "-PT15M"
+        assert alert["trigger"] == {"@type": "OffsetTrigger", "offset": "-PT15M"}
 
     def test_exdate_single_value_not_list(self):
         ical = _make_ical(
@@ -3451,6 +3455,354 @@ class TestIcalToJscal:
         override = next(iter(result["recurrenceOverrides"].values()))
         assert override == {"duration": "PT2H"}
 
+    def test_recurrence_override_with_changed_status(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:status-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "STATUS:CONFIRMED\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:status-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSTATUS:CANCELLED\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override == {"status": "cancelled"}
+
+    def test_recurrence_override_status_matching_master_is_not_in_patch(self):
+        # Master has no STATUS at all (defaults to "confirmed" per RFC 8984
+        # section 5.1.3); an override explicitly stating STATUS:CONFIRMED
+        # resolves to the same effective value, so it must not appear.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samestatus-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samestatus-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSTATUS:CONFIRMED\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "status" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_with_changed_free_busy_status(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:fb-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:fb-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nTRANSP:TRANSPARENT\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override == {"freeBusyStatus": "free"}
+
+    def test_recurrence_override_free_busy_status_matching_master_is_not_in_patch(self):
+        # Master has no TRANSP at all (defaults to "busy" per RFC 8984
+        # section 4.4.2); an override explicitly stating TRANSP:OPAQUE
+        # resolves to the same effective value, so it must not appear.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samefb-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samefb-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nTRANSP:OPAQUE\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "freeBusyStatus" not in override
+
+    def test_recurrence_override_with_changed_keywords(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:kw-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "CATEGORIES:work\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:kw-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nCATEGORIES:work,urgent\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override == {"keywords": {"work": True, "urgent": True}}
+
+    def test_recurrence_override_keywords_matching_master_is_not_in_patch(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samekw-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "CATEGORIES:work\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samekw-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nCATEGORIES:work\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "keywords" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_with_changed_location(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:loc-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "LOCATION:Room 100\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:loc-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nLOCATION:Room 200\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert list(override["locations"].values()) == [{"name": "Room 200"}]
+
+    def test_recurrence_override_location_matching_master_is_not_in_patch(self):
+        # Gates a real bug caught during planning: _location_str_to_jscal
+        # generates a fresh random map key on every call, so an unchanged
+        # location must not be compared by raw dict equality (it would
+        # always differ) or it would always wrongly appear in the patch.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:sameloc-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "LOCATION:Room 100\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:sameloc-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nLOCATION:Room 100\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "locations" not in override
+        assert override["title"] == "Renamed"
+
+    def test_master_virtual_location_from_conference(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vloc-master@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            'CONFERENCE;VALUE=URI;FEATURE=AUDIO,VIDEO;LABEL="Main room":'
+            "https://chat.example.com/main\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc == {
+            "@type": "VirtualLocation",
+            "uri": "https://chat.example.com/main",
+            "name": "Main room",
+            "features": {"audio": True, "video": True},
+        }
+
+    def test_master_virtual_location_single_feature_is_not_a_bare_string(self):
+        # icalendar returns a bare string for FEATURE when exactly one value
+        # is present (not a one-element list), unlike ATTENDEE/ATTACH; this
+        # must still produce a features map, not a malformed non-dict value.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vloc-single@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI;FEATURE=CHAT:https://chat.example.com/room1\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["features"] == {"chat": True}
+
+    def test_master_virtual_location_unrecognized_feature_passes_through(self):
+        # RFC 8984 section 4.2.6: a feature value not in the fixed set MAY
+        # be a vendor-specific or IANA-registered one; this converter must
+        # pass it through, not drop it, matching the spec's own "unknown
+        # value should be treated the same as if omitted" tolerance for
+        # readers, not for this producer.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vloc-unknown@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI;FEATURE=X-WHITEBOARD:https://chat.example.com/room1\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["features"] == {"x-whiteboard": True}
+
+    def test_master_multiple_conference_properties_become_multiple_virtual_locations(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vloc-multi@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:tel:+1-555-555-5555\r\n"
+            "CONFERENCE;VALUE=URI;FEATURE=CHAT:https://chat.example.com/room1\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        uris = {v["uri"] for v in result["virtualLocations"].values()}
+        assert uris == {"tel:+1-555-555-5555", "https://chat.example.com/room1"}
+
+    def test_recurrence_override_with_changed_virtual_locations(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vloc-ovr@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/room1\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:vloc-ovr@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI;FEATURE=PHONE:tel:+1-555-555-5555\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        vloc = next(iter(override["virtualLocations"].values()))
+        assert vloc["uri"] == "tel:+1-555-555-5555"
+        assert vloc["features"] == {"phone": True}
+
+    def test_recurrence_override_virtual_locations_matching_master_is_not_in_patch(self):
+        # Gates the same UUID-key bug as the location test above, for
+        # _conference_to_virtual_location instead.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samevloc@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/room1\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samevloc@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/room1\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "virtualLocations" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_with_changed_participants(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:part-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:part-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\n"
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n"
+            "ATTENDEE;CN=Bob:mailto:bob@example.com\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        names = {p["name"] for p in override["participants"].values()}
+        assert names == {"Alice", "Bob"}
+
+    def test_recurrence_override_participants_matching_master_is_not_in_patch(self):
+        # Gates the same UUID-key bug as the location test above, for
+        # _organizer_to_participant/_attendee_to_participant instead.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samepart-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samepart-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\n"
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n"
+            "SUMMARY:Renamed\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "participants" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_with_changed_alerts(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:alert-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:alert-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSUMMARY:Weekly\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT30M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert list(override["alerts"].values()) == [
+            {
+                "@type": "Alert",
+                "action": "display",
+                "trigger": {"@type": "OffsetTrigger", "offset": "-PT30M"},
+            }
+        ]
+
+    def test_recurrence_override_alerts_matching_master_is_not_in_patch(self):
+        # Gates a real bug caught during planning: the master event's own
+        # jscal["alerts"] used to be built AFTER this loop ran, so this
+        # comparison always saw "no master alerts" and every override with
+        # any VALARM at all wrongly appeared in the patch.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:samealert-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:samealert-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSUMMARY:Renamed\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "alerts" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_with_triggerless_valarm_has_no_alerts_patch(self):
+        # A VALARM with no TRIGGER is malformed (TRIGGER is mandatory per
+        # RFC 5545 section 3.6.6 and RFC 8984 section 4.5.2) and is skipped
+        # entirely, with a warning, same as the master event's own
+        # equivalent VALARM would be. The override must not record this as
+        # an explicit "alerts: {}" patch; a discarded malformed sub-item is
+        # not a real signal to override the master's alerts with nothing.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:badalarm-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "RRULE:FREQ=WEEKLY\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:badalarm-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSUMMARY:Renamed\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert "alerts" not in override
+        assert override["title"] == "Renamed"
+
+    def test_recurrence_override_combines_multiple_property_changes(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:combo-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Weekly\r\n"
+            "STATUS:CONFIRMED\r\nCATEGORIES:work\r\nLOCATION:Room 100\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:combo-uid@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSTATUS:CANCELLED\r\n"
+            "CATEGORIES:work,urgent\r\nLOCATION:Room 200\r\n"
+            "SUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        assert override["status"] == "cancelled"
+        assert override["keywords"] == {"work": True, "urgent": True}
+        assert list(override["locations"].values()) == [{"name": "Room 200"}]
+
     def test_categories_bare_text_fallback(self):
         from icalendar.prop import vText
 
@@ -3560,14 +3912,30 @@ class TestJscalToIcal:
         assert "EXDATE" in result
 
     def test_alert_relative(self):
-        jscal = _minimal_jscal(alerts={"al1": {"trigger": "-PT15M", "action": "display"}})
+        jscal = _minimal_jscal(
+            alerts={
+                "al1": {
+                    "trigger": {"@type": "OffsetTrigger", "offset": "-PT15M"},
+                    "action": "display",
+                }
+            }
+        )
         result = jscal_to_ical(jscal)
         assert "BEGIN:VALARM" in result
         assert "TRIGGER:-PT15M" in result
 
     def test_alert_related_end(self):
         jscal = _minimal_jscal(
-            alerts={"al1": {"trigger": "-PT5M", "action": "display", "relativeTo": "end"}}
+            alerts={
+                "al1": {
+                    "trigger": {
+                        "@type": "OffsetTrigger",
+                        "offset": "-PT5M",
+                        "relativeTo": "end",
+                    },
+                    "action": "display",
+                }
+            }
         )
         result = jscal_to_ical(jscal)
         assert "RELATED=END" in result
@@ -3901,20 +4269,37 @@ class TestJscalToIcal:
 
     def test_alert_absolute_utc_trigger(self):
         jscal = _minimal_jscal(
-            alerts={"al1": {"trigger": "2024-06-15T09:30:00Z", "action": "display"}}
+            alerts={
+                "al1": {
+                    "trigger": {"@type": "AbsoluteTrigger", "when": "2024-06-15T09:30:00Z"},
+                    "action": "display",
+                }
+            }
         )
         result = jscal_to_ical(jscal)
         assert "TRIGGER:20240615T093000Z" in result
 
     def test_alert_malformed_absolute_trigger_falls_back_to_zero(self):
         jscal = _minimal_jscal(
-            alerts={"al1": {"trigger": "2024-99-99T00:00:00Z", "action": "display"}}
+            alerts={
+                "al1": {
+                    "trigger": {"@type": "AbsoluteTrigger", "when": "2024-99-99T00:00:00Z"},
+                    "action": "display",
+                }
+            }
         )
         result = jscal_to_ical(jscal)
         assert "TRIGGER" in result
 
     def test_alert_malformed_relative_trigger_falls_back_to_zero(self):
-        jscal = _minimal_jscal(alerts={"al1": {"trigger": "not-a-duration", "action": "display"}})
+        jscal = _minimal_jscal(
+            alerts={
+                "al1": {
+                    "trigger": {"@type": "OffsetTrigger", "offset": "not-a-duration"},
+                    "action": "display",
+                }
+            }
+        )
         result = jscal_to_ical(jscal)
         assert "TRIGGER" in result
 
@@ -3924,7 +4309,14 @@ class TestJscalToIcal:
         assert "TRIGGER" in result
 
     def test_alert_non_display_action_without_description_omits_reminder_text(self):
-        jscal = _minimal_jscal(alerts={"al1": {"trigger": "-PT15M", "action": "email"}})
+        jscal = _minimal_jscal(
+            alerts={
+                "al1": {
+                    "trigger": {"@type": "OffsetTrigger", "offset": "-PT15M"},
+                    "action": "email",
+                }
+            }
+        )
         result = jscal_to_ical(jscal)
         assert "DESCRIPTION:Reminder" not in result
 
@@ -4126,6 +4518,300 @@ class TestJscalToIcal:
         assert "RECURRENCE-ID" in result
         assert "Rescheduled" in result
 
+    def test_recurrence_override_patch_status_becomes_child_status(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-24T14:00:00Z": {"status": "cancelled"}},
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "STATUS:CANCELLED" in events[2]
+
+    def test_recurrence_override_patch_free_busy_becomes_child_transp(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={"2024-06-24T14:00:00Z": {"freeBusyStatus": "free"}},
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "TRANSP:TRANSPARENT" in events[2]
+
+    def test_recurrence_override_patch_keywords_becomes_child_categories(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {"keywords": {"work": True, "urgent": True}}
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "CATEGORIES:" in events[2]
+        assert "work" in events[2] and "urgent" in events[2]
+
+    def test_recurrence_override_patch_location_becomes_child_location(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {"locations": {"l1": {"name": "Room 200"}}}
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "LOCATION:Room 200" in events[2]
+
+    def test_master_virtual_location_becomes_conference(self):
+        jscal = _minimal_jscal(
+            virtualLocations={
+                "v1": {
+                    "@type": "VirtualLocation",
+                    "uri": "https://chat.example.com/main",
+                    "name": "Main room",
+                    "features": {"audio": True, "video": True},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "CONFERENCE" in result
+        # Not asserting the raw URI substring: RFC 5545's 75-octet line fold
+        # (section 3.1) can split it across two physical lines, same as the
+        # ATTENDEE mailto: URI case elsewhere in this file.
+        assert "LABEL=Main room" in result
+        assert "AUDIO" in result and "VIDEO" in result
+
+    def test_master_multiple_virtual_locations_become_multiple_conferences(self):
+        jscal = _minimal_jscal(
+            virtualLocations={
+                "v1": {"@type": "VirtualLocation", "uri": "https://chat.example.com/a"},
+                "v2": {"@type": "VirtualLocation", "uri": "tel:+1-555-555-5555"},
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert result.count("CONFERENCE") == 2
+
+    def test_virtual_location_unrecognized_feature_passes_through(self):
+        jscal = _minimal_jscal(
+            virtualLocations={
+                "v1": {
+                    "@type": "VirtualLocation",
+                    "uri": "https://chat.example.com/room1",
+                    "features": {"x-whiteboard": True},
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "X-WHITEBOARD" in result
+
+    def test_virtual_location_without_uri_is_skipped(self):
+        jscal = _minimal_jscal(virtualLocations={"v1": {"@type": "VirtualLocation"}})
+        result = jscal_to_ical(jscal)
+        assert "CONFERENCE" not in result
+
+    def test_recurrence_override_patch_virtual_locations_becomes_child_conference(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "virtualLocations": {
+                        "v1": {
+                            "@type": "VirtualLocation",
+                            "uri": "tel:+1-555-555-5555",
+                        }
+                    }
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "CONFERENCE" in events[2]
+        assert "tel:+1-555-555-5555" in events[2]
+
+    def test_recurrence_override_patch_flattened_keywords_pointers_become_child_categories(self):
+        # Confirmed live: Cyrus returns a recurrenceOverrides patch as
+        # flattened per-key JSON-Pointer entries ("keywords/urgent": true)
+        # rather than the single whole-map "keywords" key this converter
+        # itself always sends (RFC 8984 section 1.4.9 permits both). "null"
+        # removes a key already on the master; a non-null value sets one.
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            keywords={"planning": True},
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "keywords/urgent": True,
+                    "keywords/escalated": True,
+                    "keywords/planning": None,
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "CATEGORIES:" in events[2]
+        assert "urgent" in events[2] and "escalated" in events[2]
+        assert "planning" not in events[2]
+
+    def test_recurrence_override_patch_flattened_locations_pointers_become_child_location(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            locations={"l0": {"name": "Room 100"}},
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "locations/l1": {"@type": "Location", "name": "Room 200"},
+                    "locations/l0": None,
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "LOCATION:Room 200" in events[2]
+
+    def test_recurrence_override_patch_flattened_virtual_locations_pointers_become_child_conference(
+        self,
+    ):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            virtualLocations={
+                "v0": {"@type": "VirtualLocation", "uri": "https://chat.example.com/old"}
+            },
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "virtualLocations/v1": {
+                        "@type": "VirtualLocation",
+                        "uri": "https://chat.example.com/new",
+                    },
+                    "virtualLocations/v0": None,
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "https://chat.example.com/new" in events[2]
+        assert "https://chat.example.com/old" not in events[2]
+
+    def test_recurrence_override_patch_participants_becomes_child_organizer_attendee(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "participants": {
+                        "p1": {
+                            "@type": "Participant",
+                            "name": "Alice",
+                            "email": "alice@example.com",
+                            "calendarAddress": "mailto:alice@example.com",
+                            "roles": {"attendee": True},
+                        }
+                    }
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        # "CN=Alice", not the email address: ATTENDEE's mailto: URI can fold
+        # across a line boundary at RFC 5545's 75-octet limit, splitting
+        # "alice@example.com" across two physical lines.
+        assert "CN=Alice" in events[2]
+
+    def test_recurrence_override_patch_flattened_participants_pointers_become_child_attendee(
+        self,
+    ):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            participants={
+                "p0": {
+                    "@type": "Participant",
+                    "name": "Old",
+                    "email": "old@example.com",
+                    "calendarAddress": "mailto:old@example.com",
+                    "roles": {"attendee": True},
+                }
+            },
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "participants/p1": {
+                        "@type": "Participant",
+                        "name": "New",
+                        "email": "new@example.com",
+                        "calendarAddress": "mailto:new@example.com",
+                        "roles": {"attendee": True},
+                    },
+                    "participants/p0": None,
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "CN=New" in events[2]
+        assert "CN=Old" not in events[2]
+
+    def test_recurrence_override_patch_alerts_becomes_child_valarm(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "alerts": {
+                        "a1": {
+                            "@type": "Alert",
+                            "trigger": {"@type": "OffsetTrigger", "offset": "-PT30M"},
+                            "action": "display",
+                        }
+                    }
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "BEGIN:VALARM" in events[2]
+        assert "TRIGGER:-PT30M" in events[2]
+
+    def test_recurrence_override_patch_flattened_alerts_pointers_become_child_valarm(self):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            alerts={
+                "al0": {
+                    "@type": "Alert",
+                    "trigger": {"@type": "OffsetTrigger", "offset": "-PT5M"},
+                    "action": "display",
+                }
+            },
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "alerts/al1": {
+                        "@type": "Alert",
+                        "trigger": {"@type": "OffsetTrigger", "offset": "-PT30M"},
+                        "action": "display",
+                    },
+                    "alerts/al0": None,
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "TRIGGER:-PT30M" in events[2]
+        assert "TRIGGER:-PT5M" not in events[2]
+
     def test_floating_datetime_emitted(self):
         jscal = {
             "uid": "float-uid@example.com",
@@ -4197,7 +4883,7 @@ class TestRoundTrip:
         ctx = self._key_fields_survive(ical)
         assert "alerts" in ctx["jscal"]
         alert = next(iter(ctx["jscal"]["alerts"].values()))
-        assert alert["trigger"] == "-PT15M"
+        assert alert["trigger"] == {"@type": "OffsetTrigger", "offset": "-PT15M"}
 
     def test_with_attach_round_trip(self):
         ical = _make_ical(
@@ -4227,6 +4913,52 @@ class TestRoundTrip:
         assert "participants" in ctx["jscal"]
         assert len(ctx["jscal"]["participants"]) >= 1
         assert "alice@example.com" in ctx["ical"] or "ORGANIZER" in ctx["ical"]
+
+    def test_recurrence_override_full_fidelity_round_trip(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:override-roundtrip@example.com\r\n"
+            "DTSTAMP:20240101T000000Z\r\nDTSTART:20240617T140000Z\r\n"
+            "DURATION:PT1H\r\nSUMMARY:Weekly\r\nSTATUS:CONFIRMED\r\n"
+            "CATEGORIES:work\r\nLOCATION:Room 100\r\n"
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n"
+            "RRULE:FREQ=WEEKLY\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:override-roundtrip@example.com\r\n"
+            "DTSTAMP:20240101T000000Z\r\nRECURRENCE-ID:20240624T140000Z\r\n"
+            "SUMMARY:Weekly\r\nSTATUS:CANCELLED\r\nCATEGORIES:work,urgent\r\n"
+            "LOCATION:Room 200\r\n"
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n"
+            "ATTENDEE;CN=Bob:mailto:bob@example.com\r\n"
+            "TRANSP:TRANSPARENT\r\n"
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT30M\r\nEND:VALARM\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        jscal = ical_to_jscal(ical)
+        override = next(iter(jscal["recurrenceOverrides"].values()))
+        assert override["status"] == "cancelled"
+        assert override["freeBusyStatus"] == "free"
+        assert override["keywords"] == {"work": True, "urgent": True}
+        assert list(override["locations"].values()) == [{"name": "Room 200"}]
+        assert {p["name"] for p in override["participants"].values()} == {"Alice", "Bob"}
+        assert list(override["alerts"].values()) == [
+            {
+                "@type": "Alert",
+                "action": "display",
+                "trigger": {"@type": "OffsetTrigger", "offset": "-PT30M"},
+            }
+        ]
+
+        round_tripped = jscal_to_ical(jscal)
+        cal = _icalendar.Calendar.from_ical(round_tripped)
+        events = [c for c in cal.subcomponents if isinstance(c, _icalendar.Event)]
+        assert len(events) == 2
+        child = next(e for e in events if e.get("RECURRENCE-ID") is not None)
+        assert str(child["STATUS"]) == "CANCELLED"
+        assert str(child["TRANSP"]) == "TRANSPARENT"
+        assert str(child["LOCATION"]) == "Room 200"
+        assert "BEGIN:VALARM" in round_tripped
 
 
 def _set_response(method_name: str, call_id: str, **kwargs) -> dict:

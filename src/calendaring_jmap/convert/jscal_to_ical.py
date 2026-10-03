@@ -38,6 +38,151 @@ _PRIVACY_TO_CLASS = {
     "secret": "CONFIDENTIAL",
 }
 
+# RFC 8984 section 1.4.9 (PatchObject): a pointer like "keywords/urgent" sets
+# or (if null) removes just that one key of the map at "keywords", relative
+# to whatever the patched object already has there. Confirmed live: Cyrus
+# returns a recurrenceOverrides patch in this flattened, per-key form when
+# the master event already has its own value for that property (there is
+# something to diff against); when the master has none, Cyrus sends the
+# override's whole map under the literal key instead, since there is
+# nothing to flatten relative to. This converter itself only ever sends a
+# patch as a single whole-map replacement, e.g. {"keywords": {...}}, never
+# per-key pointers, so a patch read back from Cyrus needs either shape
+# resolved into the single whole-map key
+# _add_keywords/_add_location/_add_virtual_locations_to_component/
+# _add_participants_to_component/_add_alerts_to_component already expect, or
+# the whole property is silently dropped (the literal "keywords" key is
+# never present in a flattened patch).
+_RECURRENCE_OVERRIDE_MAP_PROPERTIES = (
+    "participants",
+    "locations",
+    "virtualLocations",
+    "alerts",
+    "keywords",
+)
+
+
+def _resolve_flattened_map_patches(patch: dict, jscal: dict) -> dict:
+    """Return ``patch`` with any flattened ``"X/subkey"`` pointers for a
+    map-typed recurrence-override property resolved into a single literal
+    ``"X"`` whole-map key, merged onto the master event's own ``jscal[X]``
+    map. ``patch`` itself is never mutated.
+
+    No-op (returns ``patch`` unchanged, not a copy) when ``patch`` has no
+    flattened keys, which is the common case for a patch this converter
+    produced itself (:func:`~calendaring_jmap.convert.ical_to_jscal.ical_to_jscal`
+    only ever emits whole-map replacements, never per-key pointers).
+
+    Only resolves one level of nesting (``"X/subkey"``), matching what
+    Cyrus has actually been observed to send. A deeper pointer into a
+    participant or alert's own properties (``"participants/p1/roles"``,
+    legal per RFC 8984 section 1.4.9 but not something either live test
+    server produces) is not resolved and is left in ``patch`` unchanged.
+    """
+    prefixes = {f"{prop}/" for prop in _RECURRENCE_OVERRIDE_MAP_PROPERTIES}
+    flattened_keys = [k for k in patch if any(k.startswith(p) for p in prefixes)]
+    if not flattened_keys:
+        return patch
+
+    resolved = {k: v for k, v in patch.items() if k not in flattened_keys}
+    for prop in _RECURRENCE_OVERRIDE_MAP_PROPERTIES:
+        own_keys = [k for k in flattened_keys if k.startswith(f"{prop}/")]
+        if not own_keys:
+            continue
+        merged = dict(jscal.get(prop) or {})
+        for key in own_keys:
+            subkey = key[len(prop) + 1 :]
+            value = patch[key]
+            if value is None:
+                merged.pop(subkey, None)
+            else:
+                merged[subkey] = value
+        resolved[prop] = merged
+    return resolved
+
+
+def _add_status(component, status: str | None) -> None:
+    """Add a ``STATUS`` property to ``component`` from a JSCalendar
+    ``status`` value, if it maps to one. Shared by the master event and
+    each recurrence override's child VEVENT in :func:`jscal_to_ical`."""
+    if status:
+        ical_status = _STATUS_JSCAL_TO_ICAL.get(status)
+        if ical_status:
+            component.add("status", ical_status)
+
+
+def _add_free_busy_status(component, free_busy: str | None) -> None:
+    """Add a ``TRANSP`` property to ``component`` from a JSCalendar
+    ``freeBusyStatus`` value, if it resolves to something other than the
+    default ``OPAQUE``. Shared by the master event and each recurrence
+    override's child VEVENT in :func:`jscal_to_ical`."""
+    transp = _FREE_BUSY_TO_TRANSP.get(free_busy, "OPAQUE") if free_busy else "OPAQUE"
+    if transp != "OPAQUE":
+        component.add("transp", transp)
+
+
+def _add_keywords(component, keywords: dict | None) -> None:
+    """Add a ``CATEGORIES`` property to ``component`` from a JSCalendar
+    ``keywords`` map, if non-empty. Shared by the master event and each
+    recurrence override's child VEVENT in :func:`jscal_to_ical`."""
+    keywords = keywords or {}
+    if keywords:
+        cats = _keywords_to_categories(keywords)
+        if cats:
+            component.add("categories", cats)
+
+
+def _add_location(component, locations: dict | None) -> None:
+    """Add a ``LOCATION`` property to ``component`` from a JSCalendar
+    ``locations`` map, if it resolves to a name. Shared by the master
+    event and each recurrence override's child VEVENT in
+    :func:`jscal_to_ical`."""
+    locations = locations or {}
+    if locations:
+        loc_name = _locations_to_location(locations)
+        if loc_name:
+            component.add("location", loc_name)
+
+
+def _virtual_location_to_conference(vloc: dict):
+    """Build an ``icalendar.vUri`` for a ``CONFERENCE`` property from a
+    JSCalendar VirtualLocation dict.
+
+    Per draft-ietf-calext-jscalendar-icalendar section 3.7: ``uri``
+    (mandatory per :rfc:`8984#section-4.2.6`) converts to the property
+    value, ``name`` to the ``LABEL`` parameter (:rfc:`7986#section-6.4`),
+    and ``features`` to the ``FEATURE`` parameter (:rfc:`7986#section-6.3`)
+    as a list of uppercased names, matching the enum values RFC 7986 itself
+    defines in all caps; ``icalendar`` itself comma-joins a list-valued
+    parameter when serializing.
+
+    ``description`` is out of scope: the draft only converts it to a
+    ``VCONFERENCE`` component's own ``DESCRIPTION``/``STYLED-DESCRIPTION``,
+    a separate component this converter does not emit, matching
+    :func:`~calendaring_jmap.convert.ical_to_jscal._attach_to_link`'s own
+    narrower-than-the-draft precedent in the other direction.
+    """
+    uri = vloc.get("uri", "")
+    conf = icalendar.vUri(uri)
+    conf.params["VALUE"] = "URI"
+    name = vloc.get("name")
+    if name:
+        conf.params["LABEL"] = vText(name)
+    features = vloc.get("features") or {}
+    if features:
+        conf.params["FEATURE"] = [f.upper() for f, v in features.items() if v]
+    return conf
+
+
+def _add_virtual_locations_to_component(component, virtual_locations: dict) -> None:
+    """Add a ``CONFERENCE`` property to ``component`` for every entry in a
+    JSCalendar virtualLocations map. Shared by the master event and each
+    recurrence override's child VEVENT in :func:`jscal_to_ical`."""
+    for vloc in virtual_locations.values():
+        if vloc.get("uri"):
+            component.add("conference", _virtual_location_to_conference(vloc))
+
+
 _FREE_BUSY_TO_TRANSP = {
     "free": "TRANSPARENT",
     "busy": "OPAQUE",
@@ -283,31 +428,58 @@ def _participant_to_attendee(p: dict) -> vCalAddress | None:
     return addr
 
 
+def _add_participants_to_component(component, participants: dict) -> None:
+    """Add ``ORGANIZER``/``ATTENDEE`` properties to ``component`` (a VEVENT
+    or child VEVENT) from a JSCalendar participants map.
+
+    Shared by the master event and each recurrence override's child VEVENT
+    in :func:`jscal_to_ical`: at most one ``ORGANIZER`` is added (the first
+    participant whose role resolves to one via
+    :func:`_participant_to_organizer`), and every participant with an
+    attendee-shaped role becomes an ``ATTENDEE``.
+    """
+    organizer_added = False
+    for p in participants.values():
+        org = _participant_to_organizer(p)
+        if org and not organizer_added:
+            component.add("organizer", org)
+            organizer_added = True
+        att = _participant_to_attendee(p)
+        if att is not None:
+            component.add("attendee", att)
+
+
 def _alert_to_valarm(alert: dict) -> icalendar.Alarm:
-    """Convert a JSCalendar Alert dict to an icalendar.Alarm component."""
+    """Convert a JSCalendar Alert dict to an icalendar.Alarm component.
+
+    ``trigger`` is an OffsetTrigger or AbsoluteTrigger object, not a bare
+    string (:rfc:`8984#section-4.5.2`): ``{"@type": "OffsetTrigger",
+    "offset": "-PT15M", "relativeTo": "start"}`` or ``{"@type":
+    "AbsoluteTrigger", "when": "..."}``.
+    """
     alarm = icalendar.Alarm()
     action = alert.get("action", "display").upper()
     alarm.add("action", action)
 
-    trigger_str = alert.get("trigger", "")
-    if trigger_str:
-        if trigger_str.endswith("Z"):
-            try:
-                dt = datetime.strptime(trigger_str, UTC_DATETIME_FORMAT).replace(
-                    tzinfo=timezone.utc
-                )
-                alarm.add("trigger", dt)
-            except ValueError:
-                alarm.add("trigger", timedelta(0))
-        else:
-            try:
-                td = _duration_to_timedelta(trigger_str)
-                trigger = icalendar.vDuration(td)
-                if alert.get("relativeTo") == "end":
-                    trigger.params["RELATED"] = "END"
-                alarm.add("trigger", trigger)
-            except ValueError:
-                alarm.add("trigger", timedelta(0))
+    trigger = alert.get("trigger") or {}
+    trigger_type = trigger.get("@type")
+    if trigger_type == "AbsoluteTrigger":
+        when = trigger.get("when", "")
+        try:
+            dt = datetime.strptime(when, UTC_DATETIME_FORMAT).replace(tzinfo=timezone.utc)
+            alarm.add("trigger", dt)
+        except ValueError:
+            alarm.add("trigger", timedelta(0))
+    elif trigger_type == "OffsetTrigger":
+        offset = trigger.get("offset", "")
+        try:
+            td = _duration_to_timedelta(offset)
+            ical_trigger = icalendar.vDuration(td)
+            if trigger.get("relativeTo") == "end":
+                ical_trigger.params["RELATED"] = "END"
+            alarm.add("trigger", ical_trigger)
+        except ValueError:
+            alarm.add("trigger", timedelta(0))
     else:
         alarm.add("trigger", timedelta(0))
 
@@ -318,6 +490,15 @@ def _alert_to_valarm(alert: dict) -> icalendar.Alarm:
         alarm.add("description", "Reminder")
 
     return alarm
+
+
+def _add_alerts_to_component(component, alerts: dict) -> None:
+    """Add a ``VALARM`` subcomponent to ``component`` for every entry in a
+    JSCalendar alerts map. Shared by the master event and each recurrence
+    override's child VEVENT in :func:`jscal_to_ical`."""
+    for alert in alerts.values():
+        alarm = _alert_to_valarm(alert)
+        component.add_component(alarm)
 
 
 def _link_to_attach(link: dict):
@@ -439,32 +620,16 @@ def jscal_to_ical(jscal: dict) -> str:
         if cls:
             event.add("class", cls)
 
-    free_busy = jscal.get("freeBusyStatus", "busy")
-    transp = _FREE_BUSY_TO_TRANSP.get(free_busy, "OPAQUE")
-    if transp != "OPAQUE":
-        event.add("transp", transp)
+    _add_free_busy_status(event, jscal.get("freeBusyStatus", "busy"))
 
     color = jscal.get("color")
     if color:
         event.add("color", color)
 
-    keywords = jscal.get("keywords") or {}
-    if keywords:
-        cats = _keywords_to_categories(keywords)
-        if cats:
-            event.add("categories", cats)
-
-    locations = jscal.get("locations") or {}
-    if locations:
-        loc_name = _locations_to_location(locations)
-        if loc_name:
-            event.add("location", loc_name)
-
-    status = jscal.get("status")
-    if status:
-        ical_status = _STATUS_JSCAL_TO_ICAL.get(status)
-        if ical_status:
-            event.add("status", ical_status)
+    _add_keywords(event, jscal.get("keywords"))
+    _add_location(event, jscal.get("locations"))
+    _add_virtual_locations_to_component(event, jscal.get("virtualLocations") or {})
+    _add_status(event, jscal.get("status"))
 
     for rule in _recurrence_rules(jscal, "recurrenceRule", "recurrenceRules"):
         ical_rule = _jscal_rrule_to_rrule(rule, time_zone)
@@ -499,6 +664,7 @@ def jscal_to_ical(jscal: dict) -> str:
         if patch is None or (isinstance(patch, dict) and patch.get("excluded")):
             exdates.append(rid_dt)
         else:
+            patch = _resolve_flattened_map_patches(patch, jscal)
             child = icalendar.Event()
             child.add("uid", uid)
             child.add("dtstamp", datetime.now(tz=timezone.utc))
@@ -518,25 +684,36 @@ def jscal_to_ical(jscal: dict) -> str:
             child_desc = patch.get("description", description)
             if child_desc:
                 child.add("description", child_desc)
+
+            if "status" in patch:
+                _add_status(child, patch["status"])
+
+            if "freeBusyStatus" in patch:
+                _add_free_busy_status(child, patch["freeBusyStatus"])
+
+            if "keywords" in patch:
+                _add_keywords(child, patch["keywords"])
+
+            if "locations" in patch:
+                _add_location(child, patch["locations"])
+
+            if "virtualLocations" in patch:
+                _add_virtual_locations_to_component(child, patch["virtualLocations"] or {})
+
+            if "participants" in patch:
+                _add_participants_to_component(child, patch["participants"] or {})
+
+            if "alerts" in patch:
+                _add_alerts_to_component(child, patch["alerts"] or {})
+
             child_events.append(child)
 
     if exdates:
         for exdate_dt in exdates:
             event.add("exdate", exdate_dt)
 
-    organizer_added = False
-    for p in (jscal.get("participants") or {}).values():
-        org = _participant_to_organizer(p)
-        if org and not organizer_added:
-            event.add("organizer", org)
-            organizer_added = True
-        att = _participant_to_attendee(p)
-        if att is not None:
-            event.add("attendee", att)
-
-    for alert in (jscal.get("alerts") or {}).values():
-        alarm = _alert_to_valarm(alert)
-        event.add_component(alarm)
+    _add_participants_to_component(event, jscal.get("participants") or {})
+    _add_alerts_to_component(event, jscal.get("alerts") or {})
 
     for link in (jscal.get("links") or {}).values():
         attach = _link_to_attach(link)
