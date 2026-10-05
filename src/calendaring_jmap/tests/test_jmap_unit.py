@@ -3002,6 +3002,47 @@ class TestIcalToJscal:
         result = ical_to_jscal(ical)
         assert "links" not in result
 
+    def test_url_becomes_link(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Schedule Link\r\n"
+            "URL:https://example.com/schedule.ics\r\n"
+        )
+        result = ical_to_jscal(ical)
+        link = next(iter(result["links"].values()))
+        assert link == {"@type": "Link", "href": "https://example.com/schedule.ics"}
+
+    def test_url_and_attach_both_present_become_separate_links(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Mixed Links\r\n"
+            "URL:https://example.com/schedule.ics\r\n"
+            "ATTACH;FMTTYPE=application/pdf:https://example.com/doc.pdf\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert len(result["links"]) == 2
+        hrefs = {link["href"] for link in result["links"].values()}
+        assert hrefs == {"https://example.com/schedule.ics", "https://example.com/doc.pdf"}
+        rels = {link.get("rel") for link in result["links"].values()}
+        assert rels == {None, "enclosure"}
+
+    def test_no_url_omits_url_specific_link(self):
+        ical = _make_ical("DTSTART:20240615T100000Z\r\nSUMMARY:No URL Event\r\n")
+        result = ical_to_jscal(ical)
+        assert "links" not in result
+
+    def test_url_multiple_lines_keeps_only_the_first(self, caplog):
+        # RFC 5545 section 3.8.4.6: URL can be specified at most once; a
+        # second line must not silently produce a malformed href built from
+        # icalendar's own list repr of multiple vUri values.
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\nSUMMARY:Multi URL\r\n"
+            "URL:https://example.com/one.ics\r\nURL:https://example.com/two.ics\r\n"
+        )
+        with caplog.at_level("WARNING"):
+            result = ical_to_jscal(ical)
+        link = next(iter(result["links"].values()))
+        assert link["href"] == "https://example.com/one.ics"
+        assert "only the first is kept" in caplog.text
+
     def test_organizer_attendee(self):
         ical = _make_ical(
             "DTSTART:20240615T100000Z\r\n"
@@ -3642,6 +3683,171 @@ class TestIcalToJscal:
         uris = {v["uri"] for v in result["virtualLocations"].values()}
         assert uris == {"tel:+1-555-555-5555", "https://chat.example.com/room1"}
 
+    def test_vconference_description_attaches_to_matching_conference(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-desc@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "DESCRIPTION:plain description\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["description"] == "plain description"
+        assert "descriptionContentType" not in vloc
+
+    def test_vconference_styled_description_with_content_type(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-styled@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "STYLED-DESCRIPTION;VALUE=TEXT;FMTTYPE=text/html:<b>styled</b>\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["description"] == "<b>styled</b>"
+        assert vloc["descriptionContentType"] == "text/html"
+
+    def test_vconference_styled_description_preferred_over_derived_description(self):
+        # The draft's own conversion rule (section 2.3.13): a DESCRIPTION
+        # with DERIVED=TRUE does not convert at all; a non-derived
+        # STYLED-DESCRIPTION is expected to carry the real description
+        # instead.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-derived@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "DESCRIPTION;DERIVED=TRUE:derived text\r\n"
+            "STYLED-DESCRIPTION;VALUE=TEXT;FMTTYPE=text/html:<b>styled</b>\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["description"] == "<b>styled</b>"
+        assert vloc["descriptionContentType"] == "text/html"
+
+    def test_vconference_with_uri_value_styled_description_is_skipped(self):
+        # RFC 9073 section 6.5 permits VALUE=URI on STYLED-DESCRIPTION, but
+        # the draft's own conversion rule (section 2.3.41) requires TEXT;
+        # falls back to DESCRIPTION when present.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-uri-styled@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "DESCRIPTION:fallback text\r\n"
+            "STYLED-DESCRIPTION;VALUE=URI:https://example.com/desc.html\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["description"] == "fallback text"
+        assert "descriptionContentType" not in vloc
+
+    def test_vconference_with_non_text_fmttype_styled_description_is_skipped(self):
+        # RFC 9073 section 6.5's FMTTYPE allows any media type, but the
+        # draft's own conversion rule (section 2.3.41) requires it be unset
+        # or "text/*"; falls back to DESCRIPTION when present.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-non-text-fmttype@example.com\r\n"
+            "DTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "DESCRIPTION:fallback text\r\n"
+            "STYLED-DESCRIPTION;VALUE=TEXT;FMTTYPE=image/png:not actually text\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["description"] == "fallback text"
+        assert "descriptionContentType" not in vloc
+
+    def test_vconference_without_matching_conference_is_not_converted(self):
+        # draft-ietf-calext-jscalendar-icalendar section 2.2.3: a
+        # VCONFERENCE with no matching CONFERENCE property MUST NOT convert.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-orphan@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/orphan\r\n"
+            "DESCRIPTION:orphan description\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        assert "virtualLocations" not in result
+
+    def test_multiple_conference_vconference_pairs_correlate_independently(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-pairs@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/a\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/b\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/a\r\n"
+            "DESCRIPTION:description for a\r\n"
+            "END:VCONFERENCE\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/b\r\n"
+            "DESCRIPTION:description for b\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        by_uri = {v["uri"]: v["description"] for v in result["virtualLocations"].values()}
+        assert by_uri == {
+            "https://chat.example.com/a": "description for a",
+            "https://chat.example.com/b": "description for b",
+        }
+
+    def test_multiple_vconference_with_same_uri_keeps_only_the_first(self, caplog):
+        # Two VCONFERENCE subcomponents correlating to the same CONFERENCE
+        # (same URI) is undefined by the draft; matches this file's own
+        # _first_recurrence_rule convention of keeping the first and
+        # logging a warning, rather than a silent last-wins overwrite.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-dup-uri@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "DESCRIPTION:first vconference\r\n"
+            "END:VCONFERENCE\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "DESCRIPTION:second vconference\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        with caplog.at_level("WARNING"):
+            result = ical_to_jscal(ical)
+        vloc = next(iter(result["virtualLocations"].values()))
+        assert vloc["description"] == "first vconference"
+        assert "only the first is kept" in caplog.text
+
     def test_recurrence_override_with_changed_virtual_locations(self):
         ical = (
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
@@ -3659,6 +3865,32 @@ class TestIcalToJscal:
         vloc = next(iter(override["virtualLocations"].values()))
         assert vloc["uri"] == "tel:+1-555-555-5555"
         assert vloc["features"] == {"phone": True}
+
+    def test_recurrence_override_vconference_description_correlates_in_child(self):
+        # _component_to_virtual_locations is shared between the master
+        # event and each override child, so VCONFERENCE correlation (see
+        # test_vconference_description_attaches_to_matching_conference)
+        # must also work for a CONFERENCE/VCONFERENCE pair that only
+        # appears on an override's own child VEVENT, not the master.
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-ovr@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240617T140000Z\r\nDURATION:PT1H\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/master\r\n"
+            "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-ovr@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "RECURRENCE-ID:20240624T140000Z\r\nSUMMARY:Call\r\n"
+            "CONFERENCE;VALUE=URI:https://chat.example.com/override\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/override\r\n"
+            "DESCRIPTION:override description\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        result = ical_to_jscal(ical)
+        override = next(iter(result["recurrenceOverrides"].values()))
+        vloc = next(iter(override["virtualLocations"].values()))
+        assert vloc["description"] == "override description"
 
     def test_recurrence_override_virtual_locations_matching_master_is_not_in_patch(self):
         # Gates the same UUID-key bug as the location test above, for
@@ -3987,11 +4219,51 @@ class TestJscalToIcal:
         )
         result = jscal_to_ical(jscal)
         assert "ATTACH" not in result
+        # _link_to_url only converts a Link with no rel at all; "describedby"
+        # is a real rel value (RFC 8984 section 4.2.7), not an absent one,
+        # so it must not fall through to URL either.
+        assert "URL:" not in result
 
     def test_no_links_omits_attach(self):
         jscal = _minimal_jscal()
         result = jscal_to_ical(jscal)
         assert "ATTACH" not in result
+
+    def test_link_without_rel_becomes_url(self):
+        jscal = _minimal_jscal(
+            links={"l1": {"@type": "Link", "href": "https://example.com/schedule.ics"}}
+        )
+        result = jscal_to_ical(jscal)
+        assert "URL:https://example.com/schedule.ics" in result
+        assert "ATTACH" not in result
+
+    def test_link_with_rel_not_converted_to_url(self):
+        jscal = _minimal_jscal(
+            links={
+                "l1": {
+                    "@type": "Link",
+                    "href": "https://example.com/doc.pdf",
+                    "rel": "enclosure",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "URL:" not in result
+
+    def test_multiple_links_without_rel_only_first_becomes_url(self):
+        # RFC 5545 section 3.8.4.6: URL can be specified at most once per
+        # VEVENT; only the first no-rel Link in iteration order converts,
+        # the rest are silently dropped rather than emitting a second URL.
+        jscal = _minimal_jscal(
+            links={
+                "l1": {"@type": "Link", "href": "https://example.com/one.ics"},
+                "l2": {"@type": "Link", "href": "https://example.com/two.ics"},
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert result.count("URL:") == 1
+        assert "URL:https://example.com/one.ics" in result
+        assert "https://example.com/two.ics" not in result
 
     def test_participants_organizer(self):
         jscal = _minimal_jscal(
@@ -4614,6 +4886,58 @@ class TestJscalToIcal:
         result = jscal_to_ical(jscal)
         assert "CONFERENCE" not in result
 
+    def test_virtual_location_without_uri_skips_vconference_even_with_description(self):
+        # _description_to_vconference is only reachable from inside the
+        # same "if vloc.get('uri')" guard that gates CONFERENCE itself, so a
+        # missing uri must also suppress VCONFERENCE, not just CONFERENCE.
+        jscal = _minimal_jscal(
+            virtualLocations={"v1": {"@type": "VirtualLocation", "description": "no uri here"}}
+        )
+        result = jscal_to_ical(jscal)
+        assert "CONFERENCE" not in result
+        assert "VCONFERENCE" not in result
+
+    def test_virtual_location_description_becomes_vconference(self):
+        jscal = _minimal_jscal(
+            virtualLocations={
+                "v1": {
+                    "@type": "VirtualLocation",
+                    "uri": "https://chat.example.com/x",
+                    "description": "plain text description",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "BEGIN:VCONFERENCE" in result
+        assert "DESCRIPTION:plain text description" in result
+        assert "STYLED-DESCRIPTION" not in result
+
+    def test_virtual_location_description_with_content_type_becomes_styled_description(self):
+        jscal = _minimal_jscal(
+            virtualLocations={
+                "v1": {
+                    "@type": "VirtualLocation",
+                    "uri": "https://chat.example.com/x",
+                    "description": "<b>styled</b>",
+                    "descriptionContentType": "text/html",
+                }
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "BEGIN:VCONFERENCE" in result
+        assert "STYLED-DESCRIPTION" in result
+        assert "FMTTYPE=text/html" in result
+
+    def test_virtual_location_without_description_omits_vconference(self):
+        jscal = _minimal_jscal(
+            virtualLocations={
+                "v1": {"@type": "VirtualLocation", "uri": "https://chat.example.com/x"}
+            }
+        )
+        result = jscal_to_ical(jscal)
+        assert "CONFERENCE" in result
+        assert "VCONFERENCE" not in result
+
     def test_recurrence_override_patch_virtual_locations_becomes_child_conference(self):
         jscal = _minimal_jscal(
             start="2024-06-17T14:00:00Z",
@@ -4634,6 +4958,30 @@ class TestJscalToIcal:
         events = result.split("BEGIN:VEVENT")
         assert "CONFERENCE" in events[2]
         assert "tel:+1-555-555-5555" in events[2]
+
+    def test_recurrence_override_patch_virtual_location_description_becomes_child_vconference(
+        self,
+    ):
+        jscal = _minimal_jscal(
+            start="2024-06-17T14:00:00Z",
+            recurrenceRules=[{"@type": "RecurrenceRule", "frequency": "weekly"}],
+            recurrenceOverrides={
+                "2024-06-24T14:00:00Z": {
+                    "virtualLocations": {
+                        "v1": {
+                            "@type": "VirtualLocation",
+                            "uri": "https://chat.example.com/x",
+                            "description": "override desc",
+                        }
+                    }
+                }
+            },
+        )
+        del jscal["timeZone"]
+        result = jscal_to_ical(jscal)
+        events = result.split("BEGIN:VEVENT")
+        assert "BEGIN:VCONFERENCE" in events[2]
+        assert "DESCRIPTION:override desc" in events[2]
 
     def test_recurrence_override_patch_flattened_keywords_pointers_become_child_categories(self):
         # Confirmed live: Cyrus returns a recurrenceOverrides patch as
@@ -4900,6 +5248,39 @@ class TestRoundTrip:
         assert link["contentType"] == "application/pdf"
         assert "ATTACH" in ctx["ical"]
         assert "https://example.com/report.pdf" in ctx["ical"]
+
+    def test_url_round_trip(self):
+        ical = _make_ical(
+            "DTSTART:20240615T100000Z\r\n"
+            "DURATION:PT1H\r\n"
+            "SUMMARY:URL Event\r\n"
+            "URL:https://example.com/schedule.ics\r\n"
+        )
+        ctx = self._key_fields_survive(ical)
+        assert "links" in ctx["jscal"]
+        link = next(iter(ctx["jscal"]["links"].values()))
+        assert link["href"] == "https://example.com/schedule.ics"
+        assert "rel" not in link
+        assert "URL:https://example.com/schedule.ics" in ctx["ical"]
+
+    def test_virtual_location_with_description_round_trip(self):
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\n"
+            "BEGIN:VEVENT\r\nUID:vconf-roundtrip@example.com\r\nDTSTAMP:20240101T000000Z\r\n"
+            "DTSTART:20240615T100000Z\r\nDURATION:PT1H\r\nSUMMARY:VConf Event\r\n"
+            "CONFERENCE;VALUE=URI;FEATURE=AUDIO:https://chat.example.com/x\r\n"
+            "BEGIN:VCONFERENCE\r\n"
+            "URI;VALUE=URI:https://chat.example.com/x\r\n"
+            "STYLED-DESCRIPTION;VALUE=TEXT;FMTTYPE=text/html:<b>Join here</b>\r\n"
+            "END:VCONFERENCE\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        ctx = self._key_fields_survive(ical)
+        vloc = next(iter(ctx["jscal"]["virtualLocations"].values()))
+        assert vloc["description"] == "<b>Join here</b>"
+        assert vloc["descriptionContentType"] == "text/html"
+        assert "BEGIN:VCONFERENCE" in ctx["ical"]
+        assert "STYLED-DESCRIPTION" in ctx["ical"]
 
     def test_with_attendees_round_trip(self):
         ical = _make_ical(
