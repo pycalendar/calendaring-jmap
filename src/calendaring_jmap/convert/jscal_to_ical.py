@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import icalendar
 from icalendar import vCalAddress, vText
+from icalendar.cal.component_factory import ComponentFactory
 
 from calendaring_jmap.constants import (
     LINK_REL_ENCLOSURE,
@@ -156,11 +157,10 @@ def _virtual_location_to_conference(vloc: dict):
     defines in all caps; ``icalendar`` itself comma-joins a list-valued
     parameter when serializing.
 
-    ``description`` is out of scope: the draft only converts it to a
-    ``VCONFERENCE`` component's own ``DESCRIPTION``/``STYLED-DESCRIPTION``,
-    a separate component this converter does not emit, matching
-    :func:`~calendaring_jmap.convert.ical_to_jscal._attach_to_link`'s own
-    narrower-than-the-draft precedent in the other direction.
+    ``description``/``descriptionContentType`` are handled separately: the
+    draft converts them to a ``VCONFERENCE`` component's own
+    ``DESCRIPTION``/``STYLED-DESCRIPTION``, not a ``CONFERENCE`` parameter,
+    so :func:`_description_to_vconference` builds that sibling component.
     """
     uri = vloc.get("uri", "")
     conf = icalendar.vUri(uri)
@@ -174,13 +174,46 @@ def _virtual_location_to_conference(vloc: dict):
     return conf
 
 
+_VCONFERENCE_CLASS = ComponentFactory().get_component_class("VCONFERENCE")
+
+
+def _description_to_vconference(uri: str, description: str, content_type: str | None):
+    """Build a VCONFERENCE component carrying a VirtualLocation's
+    description, correlated to its sibling CONFERENCE property by URI.
+
+    Per draft-ietf-calext-jscalendar-icalendar section 2.2.3. Writes
+    STYLED-DESCRIPTION (carrying descriptionContentType via FMTTYPE) when
+    a content type is known, plain DESCRIPTION otherwise.
+    """
+    vconf = _VCONFERENCE_CLASS()
+    vconf.add("uri", icalendar.vUri(uri))
+    if content_type:
+        vconf.add(
+            "styled-description",
+            icalendar.vText(description),
+            parameters={"VALUE": "TEXT", "FMTTYPE": content_type},
+        )
+    else:
+        vconf.add("description", description)
+    return vconf
+
+
 def _add_virtual_locations_to_component(component, virtual_locations: dict) -> None:
     """Add a ``CONFERENCE`` property to ``component`` for every entry in a
-    JSCalendar virtualLocations map. Shared by the master event and each
-    recurrence override's child VEVENT in :func:`jscal_to_ical`."""
+    JSCalendar virtualLocations map, plus a sibling ``VCONFERENCE``
+    component when an entry has ``description`` set. Shared by the master
+    event and each recurrence override's child VEVENT in
+    :func:`jscal_to_ical`."""
     for vloc in virtual_locations.values():
         if vloc.get("uri"):
             component.add("conference", _virtual_location_to_conference(vloc))
+            description = vloc.get("description")
+            if description:
+                component.add_component(
+                    _description_to_vconference(
+                        vloc["uri"], description, vloc.get("descriptionContentType")
+                    )
+                )
 
 
 _FREE_BUSY_TO_TRANSP = {
@@ -542,6 +575,22 @@ def _link_to_attach(link: dict):
     return attach
 
 
+def _link_to_url(link: dict):
+    """Convert a JSCalendar Link dict to an icalendar URL property value.
+
+    Only converts a Link with no ``rel`` set at all; a Link with any
+    ``rel`` (including ``"enclosure"``) is left to :func:`_link_to_attach`
+    or a future rel-specific emitter, matching :func:`_link_to_attach`'s
+    own narrower-than-the-draft precedent.
+    """
+    if link.get("rel"):
+        return None
+    href = link.get("href")
+    if not href:
+        return None
+    return icalendar.vUri(href)
+
+
 def _keywords_to_categories(keywords: dict) -> list[str]:
     """Convert JSCalendar keywords map to a list of CATEGORIES strings."""
     return [k for k, v in keywords.items() if v]
@@ -715,10 +764,16 @@ def jscal_to_ical(jscal: dict) -> str:
     _add_participants_to_component(event, jscal.get("participants") or {})
     _add_alerts_to_component(event, jscal.get("alerts") or {})
 
+    url_written = False
     for link in (jscal.get("links") or {}).values():
         attach = _link_to_attach(link)
         if attach is not None:
             event.add("attach", attach)
+        elif not url_written:
+            url = _link_to_url(link)
+            if url is not None:
+                event.add("url", url)
+                url_written = True
 
     cal.add_component(event)
 

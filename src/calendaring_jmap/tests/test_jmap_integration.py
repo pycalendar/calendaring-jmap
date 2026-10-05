@@ -938,6 +938,64 @@ class TestJMAPEventIntegration:
         finally:
             event_client.delete_event(event_id)
 
+    def test_url_property_roundtrip(self, event_client, event_calendar_id):
+        """ical_to_jscal/jscal_to_ical convert URL <-> links (no rel).
+        Confirmed live that both Cyrus and Stalwart accept and round-trip
+        a links entry with no rel at all; no server quirk here, unlike
+        ATTACH's rel-persistence bug.
+        """
+        ical = _vevent_ical(
+            "URL Roundtrip Event",
+            datetime(2026, 7, 21, 9, 0, 0, tzinfo=timezone.utc),
+            timedelta(hours=1),
+            extra_lines="URL:https://example.com/schedule.ics\r\n",
+        )
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            fetched = jscal_to_ical(event_client.get_event(event_id).get_data())
+            assert "URL:https://example.com/schedule.ics" in fetched
+        finally:
+            event_client.delete_event(event_id)
+
+    def test_virtual_location_description_roundtrip(self, event_client, event_calendar_id, server):
+        """VirtualLocation.description (via a VCONFERENCE correlated to its
+        sibling CONFERENCE by URI) round-trips on Stalwart. Confirmed live
+        that Cyrus rejects description on a VirtualLocation outright with
+        invalidProperties, on both create and update, independent of
+        descriptionContentType or VCONFERENCE entirely; this is a real
+        Cyrus limitation on a valid RFC 8984 property, not a bug in this
+        conversion.
+        """
+        ical = _vevent_ical(
+            "VConference Roundtrip Event",
+            datetime(2026, 7, 22, 9, 0, 0, tzinfo=timezone.utc),
+            timedelta(hours=1),
+            extra_lines=(
+                "CONFERENCE;VALUE=URI;FEATURE=AUDIO:https://chat.example.com/x\r\n"
+                "BEGIN:VCONFERENCE\r\n"
+                "URI;VALUE=URI:https://chat.example.com/x\r\n"
+                "STYLED-DESCRIPTION;VALUE=TEXT;FMTTYPE=text/html:<b>Join here</b>\r\n"
+                "END:VCONFERENCE\r\n"
+            ),
+        )
+        if server == "cyrus":
+            with pytest.raises(JMAPMethodError) as exc_info:
+                event_client.create_event(event_calendar_id, ical)
+            assert exc_info.value.error_type == "invalidProperties", (
+                "cyrus: if this now accepts VirtualLocation.description, "
+                "Cyrus may have fixed this limitation; update this test "
+                "accordingly."
+            )
+            return
+        event_id = event_client.create_event(event_calendar_id, ical)
+        try:
+            data = event_client.get_event(event_id).get_data()
+            vloc = next(iter(data["virtualLocations"].values()))
+            assert vloc["description"] == "<b>Join here</b>"
+            assert vloc["descriptionContentType"] == "text/html"
+        finally:
+            event_client.delete_event(event_id)
+
     def test_recurrence_override_combines_multiple_property_changes(
         self, event_client, event_calendar_id
     ):

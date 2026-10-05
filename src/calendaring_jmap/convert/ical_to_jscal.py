@@ -453,6 +453,19 @@ def _attach_to_link(attach) -> tuple[str, dict]:
     return link_id, link
 
 
+def _url_to_link(url) -> tuple[str, dict]:
+    """Convert a URL property to a (link_id, Link dict) tuple.
+
+    Per :rfc:`5545#section-3.8.4.6`, URL has no defined relationship to the
+    links :rfc:`8984#section-4.2.7` names (enclosure, describedby, icon), so
+    rel is left unset, matching the Link object's own optional rel
+    (:rfc:`8984#section-1.4.11`). Narrower than the draft's full Link
+    mapping, same precedent as :func:`_attach_to_link`.
+    """
+    link_id = str(uuid.uuid4())
+    return link_id, {"@type": "Link", "href": str(url)}
+
+
 def _location_str_to_jscal(location_str: str) -> dict:
     """Convert a LOCATION string to a JSCalendar locations map entry.
 
@@ -492,18 +505,80 @@ def _conference_to_virtual_location(conference) -> tuple[str, dict]:
     return virtual_location_id, vloc
 
 
+def _vconference_descriptions(component) -> dict:
+    """Map each VCONFERENCE subcomponent's own URI to its resolved
+    (description, descriptionContentType) pair.
+
+    Per draft-ietf-calext-jscalendar-icalendar section 2.2.3: a VCONFERENCE
+    converts to the same VirtualLocation its matching CONFERENCE property
+    (same URI) converts to; one with no matching CONFERENCE is skipped.
+    Prefers STYLED-DESCRIPTION (RFC 9073 section 6.5, TEXT-valued, not
+    DERIVED, and with no FMTTYPE or a "text/*" one per section 2.3.41's own
+    conversion conditions) over DESCRIPTION (RFC 5545 section 3.8.1.5, not
+    DERIVED), the richer source when both are present, per section 2.3.13's
+    own "a non-derived STYLED-DESCRIPTION is expected to contain the
+    description instead" rule for a DERIVED DESCRIPTION. The draft does not
+    define what more than one VCONFERENCE sharing the same URI means; logs
+    a warning and keeps the first if this happens.
+    """
+    result: dict = {}
+    for vconf in component.subcomponents:
+        if getattr(vconf, "name", None) != "VCONFERENCE":
+            continue
+        uri = vconf.get("URI")
+        if not uri:
+            continue
+        description = None
+        content_type = None
+        for sd in _as_list(vconf.get("STYLED-DESCRIPTION")):
+            if str(sd.params.get("VALUE", "TEXT")).upper() != "TEXT":
+                continue
+            if str(sd.params.get("DERIVED", "")).upper() == "TRUE":
+                continue
+            fmttype = sd.params.get("FMTTYPE")
+            if fmttype and not str(fmttype).lower().startswith("text/"):
+                continue
+            description = str(sd)
+            content_type = str(fmttype) if fmttype else None
+            break
+        if description is None:
+            desc_prop = vconf.get("DESCRIPTION")
+            if desc_prop and str(desc_prop.params.get("DERIVED", "")).upper() != "TRUE":
+                description = str(desc_prop)
+        if description is not None:
+            if str(uri) in result:
+                log.warning(
+                    "ical_to_jscal(): VEVENT has more than one VCONFERENCE "
+                    "with URI %s, only the first is kept",
+                    uri,
+                )
+                continue
+            result[str(uri)] = (description, content_type)
+    return result
+
+
 def _component_to_virtual_locations(component) -> dict:
     """Build a JSCalendar virtualLocations map from a VEVENT-shaped
-    component's own ``CONFERENCE`` properties.
+    component's own CONFERENCE properties and any matching VCONFERENCE
+    subcomponents.
 
     Shared by the master event and each recurrence override's child VEVENT
     in :func:`ical_to_jscal`, since both need the identical "convert every
-    CONFERENCE property" shape built the same way.
+    CONFERENCE property, then attach any matching VCONFERENCE description"
+    shape built the same way.
     """
     virtual_locations: dict = {}
     for conference in _as_list(component.get("CONFERENCE")):
         vloc_id, vloc = _conference_to_virtual_location(conference)
         virtual_locations[vloc_id] = vloc
+    descriptions = _vconference_descriptions(component)
+    for vloc in virtual_locations.values():
+        found = descriptions.get(vloc["uri"])
+        if found is not None:
+            description, content_type = found
+            vloc["description"] = description
+            if content_type:
+                vloc["descriptionContentType"] = content_type
     return virtual_locations
 
 
@@ -833,10 +908,21 @@ def ical_to_jscal(ical_str: str, calendar_id: str | None = None) -> dict:
         jscal["recurrenceOverrides"] = recurrence_overrides
 
     attaches = _as_list(master.get("ATTACH"))
-    if attaches:
+    urls = _as_list(master.get("URL"))
+    if attaches or urls:
         links: dict = {}
         for attach in attaches:
             link_id, link = _attach_to_link(attach)
+            links[link_id] = link
+        if urls:
+            if len(urls) > 1:
+                log.warning(
+                    "ical_to_jscal(): VEVENT has %d URL lines, only the "
+                    "first is kept (RFC 5545 section 3.8.4.6 allows at "
+                    "most one)",
+                    len(urls),
+                )
+            link_id, link = _url_to_link(urls[0])
             links[link_id] = link
         jscal["links"] = links
 

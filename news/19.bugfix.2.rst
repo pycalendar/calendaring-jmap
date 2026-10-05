@@ -1,0 +1,1 @@
+``ical_to_jscal`` and ``jscal_to_ical`` now convert a ``VCONFERENCE`` component's ``DESCRIPTION``/``STYLED-DESCRIPTION`` to and from VirtualLocation's ``description``/``descriptionContentType``, instead of dropping it entirely. Cyrus currently rejects ``description`` on a ``VirtualLocation`` with ``invalidProperties`` on ``CalendarEvent/set``; Stalwart round-trips it correctly.
