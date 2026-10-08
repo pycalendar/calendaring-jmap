@@ -45,7 +45,7 @@ def build_query(
     """Build a ``<Object>/query`` method call tuple.
 
     Shared by every ``build_*_query`` function in this package: the shape
-    of the standard :rfc:`8620#section-5.5` arguments is identical for all
+    of the standard RFC 8620 section 5.5 arguments is identical for all
     of them. A function with extra object-specific arguments beyond these
     (``build_event_query``'s own ``expandRecurrences``/``timeZone``) calls
     this for the shared part, then adds its own keys to the returned
@@ -87,7 +87,7 @@ def build_get_by_query_result(
     ``<Object>/query`` call built with a matching ``query_call_id``.
 
     Shared by every ``build_*_get_by_query_result`` function in this
-    package. Uses a JMAP result reference (:rfc:`8620#section-3.7`) instead
+    package. Uses a JMAP result reference (RFC 8620 section 3.7) instead
     of a literal ``ids`` list, so the two calls can be batched into one HTTP
     request without a round trip between them.
 

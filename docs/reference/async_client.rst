@@ -4,5 +4,8 @@
 :mod:`async_client`: Async JMAP calendar client
 ===============================================
 
+.. meta::
+   :description: AsyncJMAPClient, the coroutine-based counterpart to JMAPClient.
+
 .. automodule:: calendaring_jmap.async_client
    :members:

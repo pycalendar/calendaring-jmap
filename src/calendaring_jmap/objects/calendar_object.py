@@ -5,8 +5,8 @@
 JMAP calendar resource object.
 
 Wraps a raw JSCalendar CalendarEvent dict with a minimal interface:
-``.id``, ``.parent``, :meth:`get_data`, :meth:`get_icalendar_instance`,
-:meth:`edit_icalendar_instance`, and :meth:`save`.
+``.id``, ``.parent``, ``get_data``, ``get_icalendar_instance``,
+``edit_icalendar_instance``, and ``save``.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class JMAPCalendarObject:
         return self.data
 
     def get_icalendar_instance(self) -> icalendar.Calendar:
-        """Return an :class:`icalendar.Calendar` for this object.
+        """Return an :class:`icalendar.Calendar <icalendar.cal.calendar.Calendar>` for this object.
 
         The result is cached after the first conversion.  Treat it as
         read-only; use :meth:`edit_icalendar_instance` to make and persist
@@ -68,9 +68,11 @@ class JMAPCalendarObject:
 
     @contextmanager
     def edit_icalendar_instance(self):
-        """Borrow an editable :class:`icalendar.Calendar` for this object.
+        """Borrow an editable
+        :class:`icalendar.Calendar <icalendar.cal.calendar.Calendar>` for this object.
 
-        Yields the cached :class:`icalendar.Calendar` for in-place editing.
+        Yields the cached
+        :class:`icalendar.Calendar <icalendar.cal.calendar.Calendar>` for in-place editing.
         Call :meth:`save` after the ``with`` block to persist changes to the server.
 
         Note: :meth:`save` is sync-only.  Async-backed calendars cannot use

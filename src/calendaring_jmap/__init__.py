@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
-Calendar operations over JMAP (:rfc:`8620` + JMAP Calendars).
+Calendar operations over JMAP (RFC 8620 + JMAP Calendars).
 
 Provides synchronous and asynchronous JMAP clients for calendar listing,
 event CRUD, incremental sync, and task CRUD.
@@ -48,7 +48,7 @@ from calendaring_jmap.objects.contact import JMAPAddressBook, JMAPContact
 
 
 def get_jmap_client(**kwargs) -> JMAPClient | None:
-    """Create a :class:`JMAPClient` from configuration.
+    """Create a :class:`~calendaring_jmap.client.JMAPClient` from configuration.
 
     Configuration is read in priority order:
 
@@ -70,7 +70,7 @@ def get_jmap_client(**kwargs) -> JMAPClient | None:
 
 
 def get_async_jmap_client(**kwargs) -> AsyncJMAPClient | None:
-    """Create an :class:`AsyncJMAPClient` from configuration.
+    """Create an :class:`~calendaring_jmap.async_client.AsyncJMAPClient` from configuration.
 
     Accepts the same arguments and reads configuration from the same sources
     as :func:`get_jmap_client`. Returns ``None`` if no configuration is found.

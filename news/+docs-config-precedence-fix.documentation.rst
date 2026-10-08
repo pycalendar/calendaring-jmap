@@ -1,0 +1,1 @@
+Corrected the authenticate how-to's description of configuration precedence: an explicit ``url`` argument doesn't merge in username, password, auth type, or timeout from environment variables or a config file.

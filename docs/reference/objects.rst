@@ -4,6 +4,11 @@
 :mod:`objects`: JMAP data objects
 =================================
 
+.. meta::
+   :description: The calendar, event, busy interval, attachment, and contact objects calendaring-jmap's methods return.
+
+The data objects calendaring-jmap's methods return: calendars, calendar events, busy intervals, attachments, and contacts.
+
 .. automodule:: calendaring_jmap.objects.calendar
    :members:
 

@@ -41,8 +41,9 @@ _PRIVACY_TO_CLASS = {
 
 # RFC 8984 section 1.4.9 (PatchObject): a pointer like "keywords/urgent" sets
 # or (if null) removes just that one key of the map at "keywords", relative
-# to whatever the patched object already has there. Confirmed live: Cyrus
-# returns a recurrenceOverrides patch in this flattened, per-key form when
+# to whatever the patched object already has there. Observed against a running
+# Cyrus instance: it returns a recurrenceOverrides patch in this flattened,
+# per-key form when
 # the master event already has its own value for that property (there is
 # something to diff against); when the master has none, Cyrus sends the
 # override's whole map under the literal key instead, since there is
@@ -71,7 +72,7 @@ def _resolve_flattened_map_patches(patch: dict, jscal: dict) -> dict:
 
     No-op (returns ``patch`` unchanged, not a copy) when ``patch`` has no
     flattened keys, which is the common case for a patch this converter
-    produced itself (:func:`~calendaring_jmap.convert.ical_to_jscal.ical_to_jscal`
+    produced itself (``ical_to_jscal``
     only ever emits whole-map replacements, never per-key pointers).
 
     Only resolves one level of nesting (``"X/subkey"``), matching what
@@ -105,7 +106,7 @@ def _resolve_flattened_map_patches(patch: dict, jscal: dict) -> dict:
 def _add_status(component, status: str | None) -> None:
     """Add a ``STATUS`` property to ``component`` from a JSCalendar
     ``status`` value, if it maps to one. Shared by the master event and
-    each recurrence override's child VEVENT in :func:`jscal_to_ical`."""
+    each recurrence override's child VEVENT in ``jscal_to_ical``."""
     if status:
         ical_status = _STATUS_JSCAL_TO_ICAL.get(status)
         if ical_status:
@@ -116,7 +117,7 @@ def _add_free_busy_status(component, free_busy: str | None) -> None:
     """Add a ``TRANSP`` property to ``component`` from a JSCalendar
     ``freeBusyStatus`` value, if it resolves to something other than the
     default ``OPAQUE``. Shared by the master event and each recurrence
-    override's child VEVENT in :func:`jscal_to_ical`."""
+    override's child VEVENT in ``jscal_to_ical``."""
     transp = _FREE_BUSY_TO_TRANSP.get(free_busy, "OPAQUE") if free_busy else "OPAQUE"
     if transp != "OPAQUE":
         component.add("transp", transp)
@@ -125,7 +126,7 @@ def _add_free_busy_status(component, free_busy: str | None) -> None:
 def _add_keywords(component, keywords: dict | None) -> None:
     """Add a ``CATEGORIES`` property to ``component`` from a JSCalendar
     ``keywords`` map, if non-empty. Shared by the master event and each
-    recurrence override's child VEVENT in :func:`jscal_to_ical`."""
+    recurrence override's child VEVENT in ``jscal_to_ical``."""
     keywords = keywords or {}
     if keywords:
         cats = _keywords_to_categories(keywords)
@@ -137,7 +138,7 @@ def _add_location(component, locations: dict | None) -> None:
     """Add a ``LOCATION`` property to ``component`` from a JSCalendar
     ``locations`` map, if it resolves to a name. Shared by the master
     event and each recurrence override's child VEVENT in
-    :func:`jscal_to_ical`."""
+    ``jscal_to_ical``."""
     locations = locations or {}
     if locations:
         loc_name = _locations_to_location(locations)
@@ -150,9 +151,9 @@ def _virtual_location_to_conference(vloc: dict):
     JSCalendar VirtualLocation dict.
 
     Per draft-ietf-calext-jscalendar-icalendar section 3.7: ``uri``
-    (mandatory per :rfc:`8984#section-4.2.6`) converts to the property
-    value, ``name`` to the ``LABEL`` parameter (:rfc:`7986#section-6.4`),
-    and ``features`` to the ``FEATURE`` parameter (:rfc:`7986#section-6.3`)
+    (mandatory per RFC 8984 section 4.2.6) converts to the property
+    value, ``name`` to the ``LABEL`` parameter (RFC 7986 section 6.4),
+    and ``features`` to the ``FEATURE`` parameter (RFC 7986 section 6.3)
     as a list of uppercased names, matching the enum values RFC 7986 itself
     defines in all caps; ``icalendar`` itself comma-joins a list-valued
     parameter when serializing.
@@ -160,7 +161,7 @@ def _virtual_location_to_conference(vloc: dict):
     ``description``/``descriptionContentType`` are handled separately: the
     draft converts them to a ``VCONFERENCE`` component's own
     ``DESCRIPTION``/``STYLED-DESCRIPTION``, not a ``CONFERENCE`` parameter,
-    so :func:`_description_to_vconference` builds that sibling component.
+    so ``_description_to_vconference`` builds that sibling component.
     """
     uri = vloc.get("uri", "")
     conf = icalendar.vUri(uri)
@@ -203,7 +204,7 @@ def _add_virtual_locations_to_component(component, virtual_locations: dict) -> N
     JSCalendar virtualLocations map, plus a sibling ``VCONFERENCE``
     component when an entry has ``description`` set. Shared by the master
     event and each recurrence override's child VEVENT in
-    :func:`jscal_to_ical`."""
+    ``jscal_to_ical``."""
     for vloc in virtual_locations.values():
         if vloc.get("uri"):
             component.add("conference", _virtual_location_to_conference(vloc))
@@ -287,7 +288,7 @@ def _start_to_dtstart(
 def _recurrence_rules(jscal: dict, singular_key: str, plural_key: str) -> list[dict]:
     """Return the RecurrenceRule dicts for ``singular_key``/``plural_key`` on an Event.
 
-    :rfc:`8984#section-4.3.3` defines the plural key as an array; both test
+    RFC 8984 section 4.3.3 defines the plural key as an array; both test
     servers this repo targets send the singular key instead (see the matching
     comment in ical_to_jscal.py). Prefer the plural array when present, since it is the
     actual spec type and can hold more than one rule; fall back to the
@@ -307,7 +308,7 @@ def _jscal_rrule_to_rrule(rule: dict, time_zone: str | None = None) -> dict:
     Returns a plain dict suitable for icalendar.vRecur.
 
     ``time_zone`` is the event's IANA time zone.  The JSCalendar ``until`` is a
-    LocalDateTime in that zone; :rfc:`5545#section-3.3.10` requires the
+    LocalDateTime in that zone; RFC 5545 section 3.3.10 requires the
     iCalendar UNTIL to be UTC whenever DTSTART is a TZID or UTC date-time, so
     a non-Z ``until`` is converted back to UTC here.
     """
@@ -466,9 +467,9 @@ def _add_participants_to_component(component, participants: dict) -> None:
     or child VEVENT) from a JSCalendar participants map.
 
     Shared by the master event and each recurrence override's child VEVENT
-    in :func:`jscal_to_ical`: at most one ``ORGANIZER`` is added (the first
+    in ``jscal_to_ical``: at most one ``ORGANIZER`` is added (the first
     participant whose role resolves to one via
-    :func:`_participant_to_organizer`), and every participant with an
+    ``_participant_to_organizer``), and every participant with an
     attendee-shaped role becomes an ``ATTENDEE``.
     """
     organizer_added = False
@@ -486,7 +487,7 @@ def _alert_to_valarm(alert: dict) -> icalendar.Alarm:
     """Convert a JSCalendar Alert dict to an icalendar.Alarm component.
 
     ``trigger`` is an OffsetTrigger or AbsoluteTrigger object, not a bare
-    string (:rfc:`8984#section-4.5.2`): ``{"@type": "OffsetTrigger",
+    string (RFC 8984 section 4.5.2): ``{"@type": "OffsetTrigger",
     "offset": "-PT15M", "relativeTo": "start"}`` or ``{"@type":
     "AbsoluteTrigger", "when": "..."}``.
     """
@@ -528,7 +529,7 @@ def _alert_to_valarm(alert: dict) -> icalendar.Alarm:
 def _add_alerts_to_component(component, alerts: dict) -> None:
     """Add a ``VALARM`` subcomponent to ``component`` for every entry in a
     JSCalendar alerts map. Shared by the master event and each recurrence
-    override's child VEVENT in :func:`jscal_to_ical`."""
+    override's child VEVENT in ``jscal_to_ical``."""
     for alert in alerts.values():
         alarm = _alert_to_valarm(alert)
         component.add_component(alarm)
@@ -539,20 +540,18 @@ def _link_to_attach(link: dict):
 
     Only converts a Link whose ``rel`` is ``"enclosure"``
     (``constants.LINK_REL_ENCLOSURE``); other ``rel`` values are left alone
-    (not emitted as ATTACH, IMAGE, or LINK), matching
-    :func:`~calendaring_jmap.convert.ical_to_jscal._attach_to_link`'s
+    (not emitted as ATTACH, IMAGE, or LINK), matching ``_attach_to_link``'s
     narrower-than-the-draft scope in the other direction. Returns ``None``
     for a Link this function doesn't convert.
 
     A ``data:`` URL ``href`` (RFC 2397, produced by the same function for a
     binary-form ATTACH) converts back to inline ``ENCODING=BASE64;
-    VALUE=BINARY`` using the stdlib's own RFC 2397 support
-    (:func:`urllib.request.urlopen`), rather than re-implementing data URL
-    parsing by hand. Any other ``href`` converts to a plain URI-form ATTACH.
+    VALUE=BINARY`` using the stdlib's own RFC 2397 support (``urlopen``),
+    rather than re-implementing data URL parsing by hand. Any other
+    ``href`` converts to a plain URI-form ATTACH.
 
-    See :meth:`JMAPAttachment.is_attachment
-    <calendaring_jmap.objects.attachment.JMAPAttachment.is_attachment>` for
-    a known Cyrus limitation affecting the ``rel`` this function filters on.
+    See ``JMAPAttachment.is_attachment`` for a known Cyrus limitation
+    affecting the ``rel`` this function filters on.
     """
     if link.get("rel") != LINK_REL_ENCLOSURE:
         return None
@@ -579,8 +578,8 @@ def _link_to_url(link: dict):
     """Convert a JSCalendar Link dict to an icalendar URL property value.
 
     Only converts a Link with no ``rel`` set at all; a Link with any
-    ``rel`` (including ``"enclosure"``) is left to :func:`_link_to_attach`
-    or a future rel-specific emitter, matching :func:`_link_to_attach`'s
+    ``rel`` (including ``"enclosure"``) is left to ``_link_to_attach``
+    or a future rel-specific emitter, matching ``_link_to_attach``'s
     own narrower-than-the-draft precedent.
     """
     if link.get("rel"):
@@ -616,7 +615,7 @@ def jscal_to_ical(jscal: dict) -> str:
         jscal: A raw JSCalendar CalendarEvent dict as returned by ``CalendarEvent/get``.
 
     Returns:
-        An iCalendar VCALENDAR string, normalised by :func:`~calendaring_jmap.convert._fixup.fixup`.
+        An iCalendar VCALENDAR string, normalised by ``fixup``.
 
     Raises:
         ValueError: If ``uid`` is absent or empty (mandatory per

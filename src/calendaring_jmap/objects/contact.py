@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-#: Sort key for an EmailAddress with no explicit ``pref`` (:rfc:`9553#section-1.5.3`
+#: Sort key for an EmailAddress with no explicit ``pref`` (RFC 9553 section 1.5.3
 #: caps the real range at 1-100; one past that sorts after every explicit
 #: value, matching "no preference set" being least preferred of all).
 _UNSET_PREF_SORT_KEY = 101
@@ -39,10 +39,11 @@ class JMAPAddressBook:
         share_with: Map of Principal id (:rfc:`9670#section-2`) to a dict of
             AddressBookRights (``mayRead``, ``mayWrite``, ``mayShare``,
             ``mayDelete``). ``None`` if unshared or the server lacks
-            :rfc:`9670` support (:rfc:`9610#section-2`), confirmed live on
-            Cyrus. Confirmed live that Stalwart returns ``{}`` here instead
-            when unshared, not ``None``: a caller checking "is this
-            shared" should treat the value as falsy
+            :rfc:`9670` support (:rfc:`9610#section-2`), verified against
+            Cyrus. Stalwart behaves differently: it returns ``{}`` here
+            instead when unshared, not ``None``, found by testing directly
+            against it. A caller checking "is this shared" should treat
+            the value as falsy
             (``not address_book.share_with``), not test for ``is None``
             specifically.
         my_rights: AddressBookRights dict for the current user, server-set.
@@ -84,7 +85,7 @@ class JMAPContact:
     Attributes:
         id: Server-assigned identifier. May differ from ``uid``.
         uid: The card's own JSContact uid (:rfc:`9553#section-2.1.9`).
-            RFC 9553 treats this as mandatory on every Card, but confirmed
+            That section marks it mandatory on every Card, but confirmed
             live that Stalwart's ``ContactCard/get`` never returns it at
             all, even when explicitly requested via ``properties``. Unlike
             ``id``, this is not required here: a strict-missing check would

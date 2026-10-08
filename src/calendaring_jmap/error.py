@@ -15,7 +15,7 @@ compatibility hook when it's present.
 from __future__ import annotations
 
 #: Fallback ``error_type`` used when a server's error response omits its
-#: own ``"type"`` field. Not itself a real :rfc:`8620#section-3.6.2` error type, just
+#: own ``"type"`` field. Not itself a real RFC 8620 section 3.6.2 error type, just
 #: this package's own default for a nonconformant response.
 _DEFAULT_ERROR_TYPE = "serverFail"
 
@@ -97,8 +97,8 @@ class JMAPCapabilityError(JMAPError):
 class JMAPAuthError(_CaldavAuthorizationError, JMAPError):
     """HTTP 401 or 403 received from a JMAP server.
 
-    Unlike CalDAV, JMAP does not use a 401-challenge-retry dance.
-    A 401/403 on the session GET or any API call is a hard failure.
+    JMAP does not use a 401-challenge-retry dance. A 401/403 on the
+    session GET or any API call is a hard failure.
     """
 
     error_type = "forbidden"

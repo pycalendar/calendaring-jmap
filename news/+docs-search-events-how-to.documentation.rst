@@ -1,0 +1,1 @@
+The events how-to page now covers ``search_events``, the account-wide search with the attachment, participant email, participation status, and role filters, alongside the existing single-calendar ``cal.search()`` coverage.

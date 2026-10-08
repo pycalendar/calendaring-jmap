@@ -502,9 +502,9 @@ class TestFetchSession:
         assert session.download_url is None
 
     def test_resolves_relative_upload_and_download_url(self):
-        """Confirmed live against Cyrus: uploadUrl/downloadUrl can be a
-        relative path, same as apiUrl (see test_parses_api_url's sibling
-        rewrite test), and must be resolved the same way."""
+        """Tested against a running Cyrus instance: uploadUrl/downloadUrl
+        can be a relative path, same as apiUrl (see test_parses_api_url's
+        sibling rewrite test), and must be resolved the same way."""
         data = dict(_SESSION_JSON)
         data["uploadUrl"] = "/jmap/upload/{accountId}/"
         data["downloadUrl"] = "/jmap/download/{accountId}/{blobId}/{name}?accept={type}"
@@ -1159,8 +1159,8 @@ class TestJMAPAddressBook:
             JMAPAddressBook.from_jmap({"id": "ab3"})
 
     def test_from_jmap_share_with_empty_dict_stays_empty_dict(self):
-        # Confirmed live that Stalwart returns {} for an unshared address
-        # book, not null; this must not collapse to None.
+        # Stalwart returns {} for an unshared address book, not null,
+        # verified against a running instance; this must not collapse to None.
         ab = JMAPAddressBook.from_jmap({"id": "ab4", "name": "Unshared", "shareWith": {}})
         assert ab.share_with == {}
 
@@ -1181,8 +1181,8 @@ class TestJMAPContact:
     def test_from_jmap_minimal_uses_defaults(self):
         contact = JMAPContact.from_jmap(_CONTACT_JSON_MINIMAL)
         assert contact.id == "c2"
-        # Confirmed live that Stalwart's ContactCard/get never returns uid
-        # at all, even when explicitly requested via properties, contrary
+        # Stalwart's ContactCard/get never returns uid at all, found by
+        # testing directly against it, even when explicitly requested via properties, contrary
         # to RFC 9553 treating it as mandatory; unlike id, a missing uid
         # must not raise, or every Stalwart contact would break.
         assert contact.uid is None
@@ -1592,7 +1592,7 @@ _CALENDAR_GET_RESPONSE = {
 def _make_client() -> JMAPClient:
     """Return a JMAPClient with a mocked Session cache, no HTTP session set up
     yet. Shared by every sync test helper that needs a bare mocked client
-    (:func:`_make_client_with_mocked_session`, ``_MockedClientMixin``)."""
+    (``_make_client_with_mocked_session``, ``_MockedClientMixin``)."""
     client = JMAPClient(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
     client._session_cache = Session(api_url=_API_URL, account_id=_USERNAME, state="state-abc")
     return client
@@ -2089,6 +2089,11 @@ class TestGetJMAPClient:
         assert isinstance(client, JMAPClient)
         assert client.url == _JMAP_URL
 
+    def test_passes_through_a_prebuilt_auth_object(self):
+        auth = HTTPBasicAuth(_USERNAME, _PASSWORD)
+        client = get_jmap_client(url=_JMAP_URL, auth=auth)
+        assert client._auth is auth
+
     def test_returns_none_when_no_config(self, monkeypatch, tmp_path):
         for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD", "JMAP_CONFIG_FILE"):
             monkeypatch.delenv(var, raising=False)
@@ -2125,6 +2130,11 @@ class TestGetAsyncJMAPClient:
         client = get_async_jmap_client(url=_JMAP_URL, username=_USERNAME, password=_PASSWORD)
         assert isinstance(client, AsyncJMAPClient)
         assert client.url == _JMAP_URL
+
+    def test_passes_through_a_prebuilt_auth_object(self):
+        auth = HTTPBasicAuth(_USERNAME, _PASSWORD)
+        client = get_async_jmap_client(url=_JMAP_URL, auth=auth)
+        assert client._auth is auth
 
     def test_returns_none_when_no_config(self, monkeypatch, tmp_path):
         for var in ("JMAP_URL", "JMAP_USERNAME", "JMAP_PASSWORD", "JMAP_CONFIG_FILE"):
@@ -2468,8 +2478,8 @@ class TestPrincipalMethodBuilders:
         assert isinstance(call_id, str)
 
     def test_build_get_availability_has_no_account_id(self):
-        # Confirmed live against Cyrus: accountId in this method's own args
-        # dict fails with invalidArguments, even with a correct value.
+        # Tested against a running Cyrus instance: accountId in this method's
+        # own args dict fails with invalidArguments, even with a correct value.
         _, args, _ = build_get_availability(
             "principal1", "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z"
         )
@@ -4984,8 +4994,9 @@ class TestJscalToIcal:
         assert "DESCRIPTION:override desc" in events[2]
 
     def test_recurrence_override_patch_flattened_keywords_pointers_become_child_categories(self):
-        # Confirmed live: Cyrus returns a recurrenceOverrides patch as
-        # flattened per-key JSON-Pointer entries ("keywords/urgent": true)
+        # Observed against a running Cyrus instance: it returns a
+        # recurrenceOverrides patch as flattened per-key JSON-Pointer
+        # entries ("keywords/urgent": true)
         # rather than the single whole-map "keywords" key this converter
         # itself always sends (RFC 8984 section 1.4.9 permits both). "null"
         # removes a key already on the master; a non-null value sets one.
@@ -5357,7 +5368,7 @@ def _get_response(
     with ``list``/``notFound``, plus ``state`` when given (for a sync-token
     call that only cares about the response's own state, e.g.
     ``get_sync_token``/``get_task_sync_token``). Shared the same way as
-    :func:`_set_response`."""
+    ``_set_response``."""
     args: dict = {"accountId": _USERNAME, "list": items, "notFound": []}
     if state is not None:
         args["state"] = state
@@ -5376,7 +5387,7 @@ def _changes_response(
 ) -> dict:
     """A minimal ``<Object>/changes`` response envelope: one methodResponse
     with ``oldState``/``newState``/``hasMoreChanges``/``created``/``updated``/
-    ``destroyed``. Shared the same way as :func:`_set_response`."""
+    ``destroyed``. Shared the same way as ``_set_response``."""
     return {
         "methodResponses": [
             [
@@ -5435,7 +5446,7 @@ class _MockedClientMixin:
         return mock_http
 
     def _capturing_client_for(self, client, resp) -> dict:
-        """Like :meth:`_capturing_client`, but for an already-built ``client``."""
+        """Like ``_capturing_client``, but for an already-built ``client``."""
         captured: dict = {}
 
         def capturing_post(*args, **kwargs):
@@ -6391,7 +6402,7 @@ class TestJMAPClientFreeBusy(_MockedClientMixin):
     def _fallback_query_get_response(self, events: list[dict]) -> dict:
         """Batched [CalendarEvent/query, CalendarEvent/get] response for the
         availability fallback path specifically. Deliberately not
-        :func:`_query_get_response`: fallback events carry only
+        ``_query_get_response``: fallback events carry only
         ``start``/``duration``/``freeBusyStatus`` (what
         ``_busy_intervals_from_events`` reads), no ``id``, so a real
         ``ids`` list can't be derived from them the way the shared helper
@@ -6830,8 +6841,8 @@ class TestJMAPClientPush(_MockedClientMixin):
         assert exc_info.value.error_type == "invalidProperties"
 
     def test_subscribe_push_raises_unknown_method_when_unsupported(self, monkeypatch):
-        # Confirmed live that Cyrus does not implement PushSubscription/set
-        # at all: this is what a real, unsupported server looks like, and
+        # Tested directly: Cyrus doesn't implement PushSubscription/set at
+        # all. This is what a real, unsupported server looks like, and
         # there is deliberately no capability-check fallback for it (unlike
         # get_address_books), since PushSubscription needs no capability
         # beyond core, which every request already sends.

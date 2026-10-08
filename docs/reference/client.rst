@@ -4,5 +4,8 @@
 :mod:`client`: JMAP calendar client
 ===================================
 
+.. meta::
+   :description: JMAPClient, the synchronous client calendaring-jmap's calendar, event, scheduling, and attachment methods live on.
+
 .. automodule:: calendaring_jmap.client
    :members:

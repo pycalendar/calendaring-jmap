@@ -112,7 +112,7 @@ class JMAPCalendar(Generic[_M]):
 
     @property
     def _bound_async_client(self: JMAPCalendar[Literal[True]]) -> AsyncJMAPClient:
-        """Same as :attr:`_bound_client`, narrowed for the ``_async_*`` helpers.
+        """Same as ``_bound_client``, narrowed for the ``_async_*`` helpers.
 
         Only called from a method whose public overload already restricted
         ``self`` to ``JMAPCalendar[Literal[True]]``, i.e. one that
@@ -206,10 +206,9 @@ class JMAPCalendar(Generic[_M]):
           (maps to JMAP ``before`` filter).
         - ``text`` (str): free-text search across title, description,
           locations, and participants.
-        - ``has_attachment`` (bool): see :meth:`JMAPClient.search_events`.
-        - ``participant_email`` (str): see :meth:`JMAPClient.search_events`.
-        - ``participation_status`` (str): see :meth:`JMAPClient.search_events`.
-        - ``participant_role`` (str): see :meth:`JMAPClient.search_events`.
+        - ``has_attachment`` (bool), ``participant_email`` (str),
+          ``participation_status`` (str), ``participant_role`` (str): see
+          :meth:`~calendaring_jmap.client.JMAPClient.search_events`.
 
         Returns:
             List of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`

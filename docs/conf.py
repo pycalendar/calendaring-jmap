@@ -11,7 +11,6 @@ this_year = datetime.date.today().year  # noqa: DTZ011
 copyright = f"{this_year}, calendaring-jmap contributors"  # noqa: A001
 author = "calendaring-jmap contributors"
 
-# Extensions
 extensions = [
     "notfound.extension",
     "sphinx.ext.autodoc",
@@ -21,12 +20,26 @@ extensions = [
     "sphinx_copybutton",
     "sphinx_design",
     "sphinx_issues",
+    "sphinx_last_updated_by_git",
+    "sphinxext.opengraph",
 ]
+
+html_baseurl = "https://calendaring-jmap.readthedocs.io/"
+
+ogp_site_url = html_baseurl
+ogp_site_name = "calendaring-jmap"
+ogp_description_length = 200
+ogp_type = "website"
+ogp_social_cards = {
+    "image": "_static/img/pycal-icon.png",
+    "image_mini": "_static/img/pycal-icon.png",
+    "line_color": "#0f766e",
+    "background_color": "#f8f7f4",
+}
 
 # sphinx_issues configuration: enables :issue:`N`, :pr:`N`, :user:`name` roles
 issues_github_path = "pycalendar/calendaring-jmap"
 
-# Theme configuration
 html_theme = "pydata_sphinx_theme"
 html_theme_options = {
     "icon_links": [
@@ -45,17 +58,19 @@ html_theme_options = {
             "attributes": {"target": "_blank", "rel": "noopener me"},
         },
     ],
-    "footer_start": ["nlnet", "copyright"],
-    "footer_end": ["theme-version", "sphinx-version"],
+    "footer_start": ["copyright"],
+    "footer_end": ["nlnet"],
     "logo": {"text": "calendaring-jmap"},
-    "use_edit_page_button": True,
     "show_toc_level": 2,
     "navbar_align": "content",
     "show_nav_level": 1,
     "navigation_with_keys": True,
     "collapse_navigation": False,
     "search_bar_text": "Search documentation",
+    "secondary_sidebar_items": ["page-toc"],
+    "article_footer_items": ["last-updated"],
 }
+html_last_updated_fmt = "%Y-%m-%d"
 
 html_context = {
     "github_user": "pycalendar",
@@ -66,10 +81,23 @@ html_context = {
 
 templates_path = ["_templates"]
 html_static_path = ["_static"]
-# Custom fa-custom/fa-pypi icon used in icon_links above
-html_js_files = [("js/custom-icons.js", {"defer": "defer"})]
+# Custom fa-custom/fa-pypi icon used in icon_links above; sync-bootstrap-theme
+# mirrors data-theme onto data-bs-theme so Bootstrap's own dark-mode variables
+# (dropdown menus, tooltips) activate instead of staying stuck in light mode.
+html_js_files = [
+    ("js/custom-icons.js", {"defer": "defer"}),
+    ("js/sync-bootstrap-theme.js", {"defer": "defer"}),
+]
+# Loaded as a separate <link> rather than @import inside pycal-theme.css:
+# an @import must be the first rule in a stylesheet, and if that external
+# request is ever blocked or slow (an ad blocker, a privacy extension, a
+# flaky network), browsers can fail to parse the rest of the file along
+# with it, taking every color override down with the font.
+html_css_files = [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@700&family=Cascadia+Code&display=swap",
+    "css/pycal-theme.css",
+]
 
-# notfound.extension configuration
 notfound_template = "404.html"
 # Defaults to READTHEDOCS_CANONICAL_URL's path on RTD; outside RTD that env
 # var isn't set and the extension falls back to a hardcoded "/en/latest/",
@@ -78,13 +106,12 @@ notfound_template = "404.html"
 if not os.environ.get("READTHEDOCS"):
     notfound_urls_prefix = "/"
 
-# Intersphinx mapping
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "icalendar": ("https://icalendar.readthedocs.io/en/latest/", None),
+    "niquests": ("https://niquests.readthedocs.io/en/latest/", None),
 }
 
-# Napoleon settings (Google-style docstrings)
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 napoleon_include_init_with_doc = True
@@ -93,7 +120,6 @@ napoleon_include_init_with_doc = True
 # introspection and produce "duplicate object description" warnings.
 napoleon_use_ivar = True
 
-# Autodoc settings
 autodoc_default_options = {
     "members": True,
     "undoc-members": True,

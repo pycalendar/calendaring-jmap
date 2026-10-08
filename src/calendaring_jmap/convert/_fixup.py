@@ -1,14 +1,12 @@
 # SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Fixups for iCalendar data that doesn't fully comply with :rfc:`5545`.
+"""Fixups for iCalendar data that doesn't fully comply with RFC 5545.
 
-Servers of any protocol, JMAP or CalDAV, can hand back iCalendar that
-doesn't quite follow the spec: a missing DTSTAMP, a COMPLETED given as a
-date instead of a datetime, a duplicated DTSTAMP, trailing whitespace that
-breaks folding. None of this is protocol-specific; it's a property of the
-calendar data itself, so calendaring-jmap fixes it up the same way
-regardless of which protocol delivered it.
+A JMAP server can hand back iCalendar that doesn't quite follow the spec:
+a missing DTSTAMP, a COMPLETED given as a date instead of a datetime, a
+duplicated DTSTAMP, trailing whitespace that breaks folding. This fixes
+up that data before it reaches a caller.
 
 All logic here works on the ical string, not on parsed icalendar objects,
 since broken data can cause the parse itself to fail.
@@ -66,7 +64,7 @@ class _DiscardDuplicateLines:
 
 
 def fixup(event: str | bytes) -> str:
-    """Fix up iCalendar data that doesn't fully comply with :rfc:`5545`.
+    """Fix up iCalendar data that doesn't fully comply with RFC 5545.
 
     Applies, in order:
 
@@ -75,13 +73,13 @@ def fixup(event: str | bytes) -> str:
     2. A ``CREATED`` timestamp at the epoch of year 1 (rather than absent)
        is moved to the Unix epoch instead, since some parsers choke on
        dates that old.
-    3. A backslash-escaped ``'`` or ``"`` is unescaped. :rfc:`5545#section-3.3.11`'s
+    3. A backslash-escaped ``'`` or ``"`` is unescaped. RFC 5545 section 3.3.11's
        ``ESCAPED-CHAR`` grammar only covers a literal backslash, semicolon,
        comma, and newline; quote characters need no escaping at all
        (``DQUOTE`` is a directly-permitted character in the ``text`` rule
        itself), but some producers escape them anyway.
     4. Trailing whitespace is stripped, except where it's part of a folded
-       continuation (:rfc:`5545#section-3.1` folds at 75 octets, which can
+       continuation (RFC 5545 section 3.1 folds at 75 octets, which can
        land right after a space that belongs to the value).
     5. A missing ``DTSTAMP`` (mandatory per the RFC) is added, generated at
        fixup time.

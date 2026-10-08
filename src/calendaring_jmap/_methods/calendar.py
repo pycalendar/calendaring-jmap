@@ -8,8 +8,8 @@ These are pure functions: no HTTP, no state. They build the request
 tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
-Method shapes follow :rfc:`8620#section-3.3` (get), :rfc:`8620#section-3.4`
-(changes), :rfc:`8620#section-3.5` (set); Calendar-specific properties are
+Method shapes follow RFC 8620 section 3.3 (get), RFC 8620 section 3.4
+(changes), RFC 8620 section 3.5 (set); Calendar-specific properties are
 defined in the JMAP Calendars specification.
 """
 
@@ -46,7 +46,7 @@ def parse_calendar_get(response_args: dict) -> list[JMAPCalendar]:
             whose method name is ``"Calendar/get"``.
 
     Returns:
-        List of :class:`~calendaring_jmap.objects.calendar.JMAPCalendar` objects.
+        List of ``JMAPCalendar`` objects.
         Returns an empty list if ``"list"`` is absent or empty.
     """
     return [JMAPCalendar.from_jmap(item) for item in response_args.get("list", [])]
@@ -120,6 +120,6 @@ def parse_calendar_set(
     """Parse the arguments dict from a ``Calendar/set`` method response.
 
     Returns a 6-tuple ``(created, updated, destroyed, not_created, not_updated, not_destroyed)``.
-    See :func:`calendaring_jmap._methods.parse_set_response` for field semantics.
+    See ``parse_set_response`` for field semantics.
     """
     return parse_set_response(response_args)

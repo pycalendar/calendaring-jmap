@@ -98,7 +98,7 @@ def _prop_date_or_datetime(prop) -> datetime | date:
 def _prop_timedelta(prop) -> timedelta:
     """Return a vDDDTypes property's ``.dt``, narrowed to ``timedelta``.
 
-    See :func:`_prop_date_or_datetime` for why ``getattr`` is used here.
+    See ``_prop_date_or_datetime`` for why ``getattr`` is used here.
     """
     dt = getattr(prop, "dt", None)
     if not isinstance(dt, timedelta):
@@ -238,7 +238,7 @@ def _first_recurrence_rule(master: dict, ical_key: str, tzinfo=None) -> dict | N
 def _exdate_to_overrides(exdate_prop, tzinfo=None) -> dict:
     """Convert an EXDATE property (single or list) to recurrenceOverrides entries.
 
-    ``tzinfo`` is the event's timezone; see :func:`_format_local_dt`.
+    ``tzinfo`` is the event's timezone; see ``_format_local_dt``.
 
     Returns:
         Dict mapping LocalDateTime/UTCDateTime string to {"excluded": True}
@@ -259,10 +259,10 @@ def _exdate_to_overrides(exdate_prop, tzinfo=None) -> dict:
 def _cal_address_to_imip_and_email(addr: str) -> tuple[str, str | None]:
     """Split a CAL-ADDRESS value into its ``calendarAddress`` URI and, if it is one, its bare email.
 
-    ORGANIZER/ATTENDEE values are URIs (:rfc:`5545#section-3.3.3`) and are
+    ORGANIZER/ATTENDEE values are URIs (RFC 5545 section 3.3.3) and are
     not required to use the ``mailto:`` scheme (e.g. ``sip:alice@example.com``).
-    :rfc:`8984#section-4.4.6`'s Participant ``email`` property is specifically
-    an :rfc:`5322#section-3.4.1` addr-spec, not an arbitrary URI, so a
+    RFC 8984 section 4.4.6's Participant ``email`` property is specifically
+    an RFC 5322 section 3.4.1 addr-spec, not an arbitrary URI, so a
     non-mailto address is kept as-is for ``calendarAddress`` (not
     double-wrapped in a spurious ``mailto:``) and ``email`` is left unset
     rather than populated with a value that isn't actually an email address.
@@ -344,7 +344,7 @@ def _component_to_participants(component) -> dict:
     own ``ORGANIZER`` and ``ATTENDEE`` properties.
 
     Shared by the master event and each recurrence override's child VEVENT
-    in :func:`ical_to_jscal`, since both need the identical "one ORGANIZER
+    in ``ical_to_jscal``, since both need the identical "one ORGANIZER
     plus zero or more ATTENDEEs" shape built the same way.
     """
     participants: dict = {}
@@ -362,16 +362,16 @@ def _valarm_to_alert(alarm) -> tuple[str, dict] | None:
     """Convert a VALARM component to a (alert_id, Alert dict) tuple.
 
     ``trigger`` is an OffsetTrigger or AbsoluteTrigger object, not a bare
-    string (:rfc:`8984#section-4.5.2`): ``{"@type": "OffsetTrigger",
+    string (RFC 8984 section 4.5.2): ``{"@type": "OffsetTrigger",
     "offset": "-PT15M", "relativeTo": "start"}`` for a relative VALARM
     TRIGGER, or ``{"@type": "AbsoluteTrigger", "when": "..."}`` for an
     absolute one.
 
     Returns ``None`` if the VALARM has no ``TRIGGER``: mandatory per
-    :rfc:`5545#section-3.6.6` and :rfc:`8984#section-4.5.2` alike, but not
+    RFC 5545 section 3.6.6 and RFC 8984 section 4.5.2 alike, but not
     every producer enforces it. Skipping just this one alarm (with a
     warning) rather than raising means one malformed VALARM doesn't fail
-    conversion of the whole event, matching :func:`_first_recurrence_rule`'s
+    conversion of the whole event, matching ``_first_recurrence_rule``'s
     same "degrade gracefully on a non-fatal sub-item issue" precedent.
     """
     trigger_prop = alarm.get("TRIGGER")
@@ -410,7 +410,7 @@ def _component_to_alerts(component) -> dict:
     ``VALARM`` subcomponents.
 
     Shared by the master event and each recurrence override's child VEVENT
-    in :func:`ical_to_jscal`, since both need the identical "convert every
+    in ``ical_to_jscal``, since both need the identical "convert every
     VALARM, skipping ones with no TRIGGER" shape built the same way.
     """
     alarms = [c for c in component.subcomponents if getattr(c, "name", None) == "VALARM"]
@@ -430,7 +430,7 @@ def _attach_to_link(attach) -> tuple[str, dict]:
     ATTACH (``icalendar.vUri``) converts to ``href`` as-is; a binary-form
     ATTACH (``icalendar.vBinary``, RFC 5545 section 3.8.1.1's inline
     ``ENCODING=BASE64;VALUE=BINARY`` form) converts to a ``data:`` URL
-    (:rfc:`2397`), with ``FMTTYPE`` (if set) becoming both the data URL's
+    (RFC 2397), with ``FMTTYPE`` (if set) becoming both the data URL's
     media type and ``contentType``. ``rel`` is always set to ``"enclosure"``
     (``constants.LINK_REL_ENCLOSURE``): unlike JSCalendar's general Link object,
     RFC 5545's ATTACH has no notion of a link that isn't an attachment, so
@@ -456,11 +456,11 @@ def _attach_to_link(attach) -> tuple[str, dict]:
 def _url_to_link(url) -> tuple[str, dict]:
     """Convert a URL property to a (link_id, Link dict) tuple.
 
-    Per :rfc:`5545#section-3.8.4.6`, URL has no defined relationship to the
-    links :rfc:`8984#section-4.2.7` names (enclosure, describedby, icon), so
+    Per RFC 5545 section 3.8.4.6, URL has no defined relationship to the
+    links RFC 8984 section 4.2.7 names (enclosure, describedby, icon), so
     rel is left unset, matching the Link object's own optional rel
-    (:rfc:`8984#section-1.4.11`). Narrower than the draft's full Link
-    mapping, same precedent as :func:`_attach_to_link`.
+    (RFC 8984 section 1.4.11). Narrower than the draft's full Link
+    mapping, same precedent as ``_attach_to_link``.
     """
     link_id = str(uuid.uuid4())
     return link_id, {"@type": "Link", "href": str(url)}
@@ -479,19 +479,19 @@ def _conference_to_virtual_location(conference) -> tuple[str, dict]:
     """Convert a CONFERENCE property to a (virtual_location_id, VirtualLocation dict) tuple.
 
     Per draft-ietf-calext-jscalendar-icalendar section 2.3.10: the property
-    value converts to ``uri`` (mandatory per :rfc:`8984#section-4.2.6`), the
-    ``LABEL`` parameter (:rfc:`7986#section-6.4`) to ``name``, and the
-    ``FEATURE`` parameter (:rfc:`7986#section-6.3`, comma-separated when
+    value converts to ``uri`` (mandatory per RFC 8984 section 4.2.6), the
+    ``LABEL`` parameter (RFC 7986 section 6.4) to ``name``, and the
+    ``FEATURE`` parameter (RFC 7986 section 6.3, comma-separated when
     more than one value is present) to a ``features`` map of lowercased
     feature names to ``True``. ``icalendar`` returns a bare string for
     ``FEATURE`` when exactly one value is present and a list for more than
-    one, the same single-vs-list inconsistency :func:`_as_list` already
+    one, the same single-vs-list inconsistency ``_as_list`` already
     normalizes for ``ATTENDEE``/``ATTACH``.
 
     ``VirtualLocation``'s ``description`` property is out of scope: the
     draft (section 3.7) only converts it from a ``VCONFERENCE`` component's
     own ``DESCRIPTION``/``STYLED-DESCRIPTION``, a separate component this
-    converter does not read or emit, matching :func:`_attach_to_link`'s own
+    converter does not read or emit, matching ``_attach_to_link``'s own
     narrower-than-the-draft precedent.
     """
     virtual_location_id = str(uuid.uuid4())
@@ -563,7 +563,7 @@ def _component_to_virtual_locations(component) -> dict:
     subcomponents.
 
     Shared by the master event and each recurrence override's child VEVENT
-    in :func:`ical_to_jscal`, since both need the identical "convert every
+    in ``ical_to_jscal``, since both need the identical "convert every
     CONFERENCE property, then attach any matching VCONFERENCE description"
     shape built the same way.
     """
@@ -618,7 +618,7 @@ def _map_values_differ(child_map: dict, master_map: dict) -> bool:
     would always report a difference even when nothing actually changed.
     Comparing by sorted canonical JSON of the values also tolerates the two
     maps having their entries in a different order, which can happen on a
-    round trip through :func:`~calendaring_jmap.convert.jscal_to_ical.jscal_to_ical`
+    round trip through ``jscal_to_ical``
     without the content having actually changed.
     """
 

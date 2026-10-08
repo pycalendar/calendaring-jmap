@@ -45,7 +45,15 @@ Full documentation: https://calendaring-jmap.readthedocs.io/
 
 - [RFC 8620](https://www.rfc-editor.org/rfc/rfc8620): JMAP core
 - [draft-ietf-jmap-calendars](https://datatracker.ietf.org/doc/draft-ietf-jmap-calendars/): JMAP Calendars
-- [RFC 8984](https://www.rfc-editor.org/rfc/rfc8984): JSCalendar
+- [RFC 8984](https://www.rfc-editor.org/rfc/rfc8984): JSCalendar, the conversion target for iCalendar
+- [draft-ietf-calext-jscalendar-icalendar](https://datatracker.ietf.org/doc/draft-ietf-calext-jscalendar-icalendar/): iCalendar and JSCalendar conversion rules
+- [RFC 9610](https://www.rfc-editor.org/rfc/rfc9610): JMAP Contacts
+- [RFC 9670](https://www.rfc-editor.org/rfc/rfc9670): JMAP Sharing and Principals
+- [draft-ietf-jmap-tasks](https://datatracker.ietf.org/doc/draft-ietf-jmap-tasks/): JMAP Tasks (expired; see the [server compatibility](https://calendaring-jmap.readthedocs.io/en/stable/reference/server-compatibility.html) page, no known server implements it yet)
+
+## Changelog
+
+See the [change log](https://calendaring-jmap.readthedocs.io/en/stable/changelog.html).
 
 ## Contributing
 

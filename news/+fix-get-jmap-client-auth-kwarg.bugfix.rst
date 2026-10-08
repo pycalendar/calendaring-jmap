@@ -1,0 +1,1 @@
+``get_jmap_client``/``get_async_jmap_client`` now accept a pre-built ``auth`` object. The ``auth`` keyword argument was silently dropped before reaching the client, so a caller following the documented example got ``JMAPAuthError`` instead of using their own auth object.

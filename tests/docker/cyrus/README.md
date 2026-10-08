@@ -24,7 +24,7 @@ Run the integration tests from the repo root:
 pytest src/calendaring_jmap/tests/test_jmap_integration.py
 ```
 
-To stop: `./stop.sh` (also removes the container's volumes, so the next start is a fresh instance).
+To stop: `./stop.sh`. The container stores no persistent data outside its own filesystem, so the next `./start.sh` is always a fresh instance regardless.
 
 ## Configuration
 
@@ -41,5 +41,5 @@ Pinned by digest in `docker-compose.yml` rather than `:latest`: this image only 
 ```bash
 docker-compose logs -f cyrus   # view logs
 docker-compose restart cyrus   # restart
-docker-compose down -v         # stop and wipe all data
+docker-compose down -v         # stop (-v is a no-op here; the container has no named volumes)
 ```

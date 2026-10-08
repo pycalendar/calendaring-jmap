@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """
-JSCalendar ↔ iCalendar conversion utilities.
+JSCalendar and iCalendar conversion utilities.
 
 Public API:
     ical_to_jscal(ical_str, calendar_id=None) -> dict

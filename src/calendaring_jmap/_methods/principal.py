@@ -9,7 +9,7 @@ tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
 ``Principal/getAvailability`` is defined in draft-ietf-jmap-calendars
-section 2.2, layered on the ``Principal`` object from :rfc:`9670` (JMAP
+section 2.2, layered on the ``Principal`` object from RFC 9670 (JMAP
 Sharing). It is not a get/set/query method; it takes its own bespoke
 arguments and returns a list of ``BusyPeriod`` objects, also defined in
 that same section.
@@ -28,12 +28,12 @@ def build_get_availability(
     """Build a ``Principal/getAvailability`` method call tuple.
 
     Deliberately has no ``account_id`` parameter, unlike every other
-    ``build_*`` function in this package. Confirmed live against Cyrus:
-    passing ``accountId`` inside this method's own arguments dict fails
-    with ``invalidArguments: ["accountId"]``, even with a verified-correct
-    value, while omitting it (so the server falls back to the
-    authenticated user's own account) succeeds. Confirmed live against
-    Stalwart that passing ``accountId`` explicitly works fine there, so
+    ``build_*`` function in this package. Against a running Cyrus
+    instance, passing ``accountId`` inside this method's own arguments
+    dict fails with ``invalidArguments: ["accountId"]``, even with a
+    verified-correct value, while omitting it (so the server falls back
+    to the authenticated user's own account) succeeds. Stalwart behaves
+    differently: passing ``accountId`` explicitly works fine there, so
     omitting it is the one shape that works on both.
 
     Args:
@@ -47,10 +47,11 @@ def build_get_availability(
             string.
         show_details: If true, populate each returned ``BusyPeriod.event``
             with the underlying event, where the caller has ``mayReadItems``
-            and the event isn't private. Confirmed live: Stalwart also
-            requires ``event_properties`` to be set for this to take
-            effect at all; omitting it returns ``event: null`` on Stalwart
-            even with ``show_details=True``, unlike Cyrus which returns full
+            and the event isn't private. Stalwart also requires
+            ``event_properties`` to be set for this to take effect at
+            all, found by testing directly against it; omitting it
+            returns ``event: null`` on Stalwart even with
+            ``show_details=True``, unlike Cyrus which returns full
             details by default.
         event_properties: Which ``CalendarEvent`` properties to include in
             each returned event, when ``show_details`` is true. Confirmed
@@ -79,7 +80,6 @@ def parse_get_availability(response_args: dict) -> list[dict]:
         List of raw ``BusyPeriod`` dicts, each with ``utcStart``, ``utcEnd``,
         ``busyStatus``, ``event`` (``None`` unless ``showDetails`` was set
         and permitted), and ``accountId``. Callers convert these to typed
-        :class:`~calendaring_jmap.objects.busy_interval.BusyInterval`
-        objects; this function does not.
+        ``BusyInterval`` objects; this function does not.
     """
     return response_args.get("list", [])

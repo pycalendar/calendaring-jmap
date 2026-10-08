@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 calendaring-jmap contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+extends: existence
+message: "'%s' can read as condescending to a reader who can't complete the task as described; see the contributor guide's prose-style section."
+link: https://docs.pylonsproject.org/projects/docs-style-guide/
+ignorecase: true
+level: warning
+tokens:
+  - simple
+  - simply
+  - just
+  - very
+  - easy
+  - easily

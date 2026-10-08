@@ -5,6 +5,11 @@
 Change log
 ==========
 
+.. meta::
+   :description: Every release of calendaring-jmap, newest first, with what changed in each one.
+
+Every calendaring-jmap release, newest first: new features, bug fixes, breaking changes, and documentation updates, each with the pull request that shipped it.
+
 .. py:currentmodule:: calendaring_jmap
 
 .. Do *NOT* add new change log entries to this file.

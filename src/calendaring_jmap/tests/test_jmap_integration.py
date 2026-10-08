@@ -5,11 +5,10 @@
 Integration tests for calendaring-jmap against live JMAP servers.
 
 Cyrus (port 8802):
-    docker-compose -f tests/docker/cyrus/docker-compose.yml up -d
+    tests/docker/cyrus/start.sh
 
 Stalwart (port 8809):
-    docker-compose -f tests/docker/stalwart/docker-compose.yml up -d
-    ./tests/docker/stalwart/setup_stalwart.sh
+    tests/docker/stalwart/start.sh
 
 Each server's test classes are skipped automatically when that server is not
 reachable, so a missing server is quiet, not a failure.
@@ -93,10 +92,10 @@ def _vevent_block(
 ) -> str:
     """Build one ``BEGIN:VEVENT``...``END:VEVENT`` block.
 
-    Shared by :func:`_vevent_ical` (one VEVENT, the common case) and
-    :func:`_recurring_override_ical` (a master VEVENT plus one
+    Shared by ``_vevent_ical`` (one VEVENT, the common case) and
+    ``_recurring_override_ical`` (a master VEVENT plus one
     RECURRENCE-ID override VEVENT, which needs two blocks sharing one UID
-    rather than :func:`_vevent_ical`'s own fresh ``uuid.uuid4()`` per call).
+    rather than ``_vevent_ical``'s own fresh ``uuid.uuid4()`` per call).
     """
     end = start + duration
     recurrence_id_line = (
@@ -124,8 +123,8 @@ def _vevent_ical(
 ) -> str:
     """Build a minimal single-VEVENT VCALENDAR string.
 
-    Shared by :func:`_minimal_ical`, :func:`_recurring_ical`, and
-    :func:`_invite_ical`, which each add their own ``extra_lines``
+    Shared by ``_minimal_ical``, ``_recurring_ical``, and
+    ``_invite_ical``, which each add their own ``extra_lines``
     (``RRULE``, ``ORGANIZER``/``ATTENDEE``) before ``END:VEVENT``.
     """
     uid = str(uuid.uuid4())
@@ -192,7 +191,7 @@ def _recurring_override_ical(
 
     None of ``_minimal_ical``/``_recurring_ical``/``_invite_ical`` support a
     second, override VEVENT; they each build exactly one via
-    :func:`_vevent_ical`. Shared by every recurrenceOverrides integration
+    ``_vevent_ical``. Shared by every recurrenceOverrides integration
     test that needs a real override instance round-tripped through a live
     server.
     """
@@ -382,7 +381,7 @@ def second_account_client(request, server):
 def _own_account_id(server: str, primary: bool) -> str:
     """Resolve the account id a user's own session sees for itself, by
     opening a session as that user and reading it back. Shared by
-    :func:`owner_account_id`/:func:`second_account_id`: both need this same
+    ``owner_account_id``/``second_account_id``: both need this same
     self-resolution (this client has no Principal/query support yet, so
     there's no other way to look up someone else's account id)."""
     if server == "cyrus":
@@ -785,7 +784,7 @@ class TestJMAPSchedulingIntegration:
         non-per-user property changes and the account is the event's
         origin. The client never sets sequence itself; this proves the
         server does, rather than assuming it from the spec text alone.
-        Confirmed live: Cyrus does this; Stalwart does not touch sequence
+        Tested directly: Cyrus does this; Stalwart does not touch sequence
         on update at all, a real spec deviation, not a test bug."""
         if server == "stalwart":
             pytest.skip("Stalwart does not increment sequence on CalendarEvent/set update")
@@ -940,8 +939,8 @@ class TestJMAPEventIntegration:
 
     def test_url_property_roundtrip(self, event_client, event_calendar_id):
         """ical_to_jscal/jscal_to_ical convert URL <-> links (no rel).
-        Confirmed live that both Cyrus and Stalwart accept and round-trip
-        a links entry with no rel at all; no server quirk here, unlike
+        Both Cyrus and Stalwart accept and round-trip a links entry with
+        no rel at all, verified against each; no server quirk here, unlike
         ATTACH's rel-persistence bug.
         """
         ical = _vevent_ical(
@@ -959,8 +958,8 @@ class TestJMAPEventIntegration:
 
     def test_virtual_location_description_roundtrip(self, event_client, event_calendar_id, server):
         """VirtualLocation.description (via a VCONFERENCE correlated to its
-        sibling CONFERENCE by URI) round-trips on Stalwart. Confirmed live
-        that Cyrus rejects description on a VirtualLocation outright with
+        sibling CONFERENCE by URI) round-trips on Stalwart. Cyrus, tested
+        directly, rejects description on a VirtualLocation outright with
         invalidProperties, on both create and update, independent of
         descriptionContentType or VCONFERENCE entirely; this is a real
         Cyrus limitation on a valid RFC 8984 property, not a bug in this
@@ -1105,7 +1104,7 @@ class TestJMAPEventIntegration:
     def test_recurrence_override_location_patch_resolves_when_master_has_its_own_location(
         self, event_client, event_calendar_id, server
     ):
-        """Confirmed live on both servers: Cyrus returns a map-typed
+        """Tested against both servers: Cyrus returns a map-typed
         recurrenceOverrides property (locations, participants,
         virtualLocations, alerts, keywords) as flattened per-key
         JSON-Pointer entries specifically when the master event already has
@@ -1151,10 +1150,10 @@ class TestJMAPEventIntegration:
 
 @_sync_servers
 class TestJMAPFreeBusyIntegration:
-    """Confirmed live (both servers, this repo's own verification, not just
-    the spec text) that Principal/getAvailability genuinely works on both
-    Cyrus and Stalwart, so these tests exercise the real primary path, not
-    the fallback. Neither test server lacks the base
+    """This repo's own verification, not just the spec text, confirms
+    Principal/getAvailability genuinely works on both Cyrus and Stalwart,
+    so these tests exercise the real primary path, not the fallback.
+    Neither test server lacks the base
     urn:ietf:params:jmap:principals capability. The fallback path's own
     mechanism (expandRecurrences) is proven correct in
     test_fallback_recurring_event_busy_intervals below by calling the
@@ -1188,7 +1187,7 @@ class TestJMAPFreeBusyIntegration:
             event_client.delete_event(event_id)
 
     def test_get_availability_show_details(self, event_client, event_calendar_id, server):
-        """Confirmed live: Cyrus returns full event details by default with
+        """Tested directly: Cyrus returns full event details by default with
         show_details=True. Stalwart does not, since it additionally
         requires eventProperties to be set to one of its own narrow
         supported set, which get_availability doesn't currently pass; on
@@ -1222,7 +1221,7 @@ class TestJMAPFreeBusyIntegration:
         to give this mechanism live coverage. Without expandRecurrences,
         a recurring series returns one interval carrying only the master
         occurrence's own start, not the occurrences that actually fall in
-        the window. Confirmed live during this feature's own planning."""
+        the window, a limitation found while planning this feature."""
         ical = _recurring_ical(
             "FREQ=WEEKLY",
             title="Weekly Fallback Availability Test",
@@ -1333,7 +1332,7 @@ class TestAsyncJMAPEventIntegration:
 
 @_sync_servers
 class TestAttachmentIntegration:
-    """Confirmed live on both servers: uploadUrl/downloadUrl are always
+    """Tested against both servers: uploadUrl/downloadUrl are always
     present, upload/download round-trip byte-for-byte, and the calendars
     draft's blobId-on-Link extension isn't persisted by either server
     (attach_to_event uses href instead, see its docstring). The Cyrus
@@ -1349,8 +1348,8 @@ class TestAttachmentIntegration:
         assert downloaded == data
 
     def test_download_tolerates_omitted_type_and_name(self, event_client):
-        """Confirmed live: both servers resolve a blob by blobId alone; an
-        omitted type/name only affects the response's own Content-Type/
+        """Verified against both servers: each resolves a blob by blobId
+        alone; an omitted type/name only affects the response's own Content-Type/
         Content-Disposition headers, not whether the download succeeds."""
         data = b"omitted type and name"
         blob_id = event_client.upload_attachment(data, "text/plain")
@@ -1479,8 +1478,8 @@ def address_book_id(event_client, server):
 
 @_sync_servers
 class TestContactsIntegration:
-    """Confirmed live that both Cyrus and Stalwart advertise
-    urn:ietf:params:jmap:contacts under the same account already used for
+    """Both Cyrus and Stalwart advertise urn:ietf:params:jmap:contacts,
+    verified against each, under the same account already used for
     calendars, so no graceful-fallback path is exercised here; that path is
     covered only by the mocked unit tests, the same way get_availability's
     own fallback-path unit test covers a scenario neither live server
@@ -1557,7 +1556,7 @@ class TestContactsIntegration:
             self._destroy_contact(event_client, contact_id)
 
     def test_search_contacts_by_text(self, event_client, address_book_id, server):
-        """Confirmed live: Cyrus matches the text filter as a substring
+        """Tested directly: Cyrus matches the text filter as a substring
         against a card's name, not exact-only. Stalwart v0.16.21 does not
         match it against the name at all, only against the email address
         (see search_contacts's own docstring); a text search for any part
@@ -1628,14 +1627,14 @@ class TestContactsIntegration:
 
 @_stalwart_skip
 class TestPushIntegration:
-    """Confirmed live that Cyrus does not implement PushSubscription/get or
+    """Tested directly: Cyrus doesn't implement PushSubscription/get or
     /set at all (unknownMethod on both), so there is no Cyrus counterpart
     to this class: nothing here is exercisable against that server.
 
     The lifecycle tests below (create, renew, destroy) use a throwaway
     ``https://`` URL that never actually receives the server's
     PushVerification POST, since this test suite has no HTTP server of its
-    own to receive it. Confirmed live that Stalwart accepts the create
+    own to receive it. Stalwart, verified directly, accepts the create
     regardless and lets renew/destroy proceed on an unverified
     subscription, so the create/renew/destroy lifecycle is fully
     exercisable without completing verification.
@@ -1680,8 +1679,8 @@ class TestPushIntegration:
             stalwart_client.unsubscribe_push(subscription_id)
 
     def test_confirm_push_verification_rejects_wrong_code(self, stalwart_client):
-        # Confirmed live that Stalwart rejects a wrong verificationCode
-        # with invalidProperties rather than silently ignoring it, even
+        # Stalwart rejects a wrong verificationCode with invalidProperties
+        # rather than silently ignoring it, verified against a running instance, even
         # against a real, currently-unverified subscription.
         subscription_id = stalwart_client.subscribe_push(
             "https://example.invalid/push", "integration-test-device"
@@ -1731,8 +1730,8 @@ class TestRicherEventSearchIntegration:
     ical_to_jscal conversion, not a hand-built raw JMAP dict) and asserts on
     search_events's returned results.
 
-    Confirmed live that both Cyrus and Stalwart drop the "attendee" role
-    from a participant's roles map, so participant_role="attendee" itself
+    Both Cyrus and Stalwart drop the "attendee" role from a participant's
+    roles map, verified against each, so participant_role="attendee" itself
     is not directly testable here; _invite_ical(role="CHAIR") is used
     instead, which survives on both servers, and
     test_participant_role_attendee_confirmed_dropped locks in the known
@@ -1757,8 +1756,8 @@ class TestRicherEventSearchIntegration:
             results = event_client.search_events(calendar_id=event_calendar_id, has_attachment=True)
             matched = any(r.id == event_id for r in results)
             if server == "cyrus":
-                # Confirmed live: Cyrus drops rel: "enclosure" on read-back,
-                # so has_attachment=True cannot find this event there.
+                # Cyrus drops rel: "enclosure" on read-back, seen against a
+                # running instance, so has_attachment=True cannot find this event there.
                 assert not matched, (
                     f"{server}: expected has_attachment=True to miss this event "
                     "(known rel: enclosure drop); it matched instead, meaning "

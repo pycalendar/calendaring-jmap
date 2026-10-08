@@ -36,6 +36,10 @@ htmlcov/
 .nox/
 .hypothesis/
 
+# Linting and type-checking caches
+.ruff_cache/
+.mypy_cache/
+
 # Virtual environments
 .venv
 venv/
@@ -61,5 +65,9 @@ src/calendaring_jmap/_version.py
 # uv lock file
 uv.lock
 
-# Docs build
-docs/_build/
+# Docs build (including comparison builds under other names, e.g. docs/_build2)
+docs/_build*/
+
+# Vale-synced third-party style packages (fetched by `vale sync`)
+docs/.vale/styles/Microsoft/
+docs/.vale/styles/signs-of-ai-writing/

@@ -3,7 +3,7 @@
 
 # Testing with Stalwart
 
-Docker setup for running integration tests against a real Stalwart JMAP server. Cyrus doesn't implement JMAP Tasks, so this is the one used for task-related integration tests.
+Docker setup for running integration tests against a real Stalwart JMAP server. Cyrus doesn't implement `PushSubscription/get`/`/set` at all, so push notification integration tests run only against Stalwart. Most other integration tests run against both servers. Neither server implements the JMAP Tasks draft, so there are no task integration tests against either.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ Run the integration tests from the repo root:
 pytest src/calendaring_jmap/tests/test_jmap_integration.py
 ```
 
-To stop: `./stop.sh` (also removes the container's volumes, so the next start is a fresh instance).
+To stop: `./stop.sh`. Stalwart's data directory is a `tmpfs` mount, not a named volume, so the next `./start.sh` is always a fresh instance regardless.
 
 ## Configuration
 
@@ -43,5 +43,5 @@ Pinned to a specific released version (`v0.16.21` as of writing) rather than `:l
 ```bash
 docker-compose logs -f stalwart   # view logs
 docker-compose restart stalwart   # restart
-docker-compose down -v            # stop and wipe all data
+docker-compose down -v            # stop (-v is a no-op here; the data directory is a tmpfs mount, not a named volume)
 ```

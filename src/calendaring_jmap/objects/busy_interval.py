@@ -24,8 +24,15 @@ class BusyInterval:
     """One busy/free interval.
 
     Attributes:
-        start: Start of the interval (``UTCDateTime`` string).
-        end: End of the interval (``UTCDateTime`` string).
+        start: Start of the interval (``UTCDateTime`` string, always
+            ``Z``-suffixed). Normalized to this one shape regardless of
+            whether it came from ``Principal/getAvailability`` or the
+            ``CalendarEvent/query`` fallback, since :rfc:`8984` allows a
+            JSCalendar ``start`` to be UTC, time-zone-qualified, or
+            floating; a floating start has no true UTC equivalent and is
+            treated as UTC.
+        end: End of the interval (``UTCDateTime`` string), same
+            normalization as ``start``.
         busy_status: One of ``"confirmed"``, ``"tentative"``,
             ``"unavailable"`` (see ``constants.BUSY_STATUS_*``).
         event: The underlying event, when the server populated it. This can
