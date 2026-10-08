@@ -281,3 +281,19 @@ a.reference.external::after {
   color: var(--pst-color-accent);
   text-decoration-color: var(--pst-color-accent);
 }
+
+/* Read the Docs' "Show diff" PR preview overlay (.doc-diff-added/-removed
+   on plain <ins>/<del> tags). RTD ships no theme-aware default for these,
+   just light-mode-tuned colors, which read as a muddy, low-contrast block
+   against a dark background. Reusing the same success/danger tokens the
+   admonitions already use keeps it legible and on-theme in both modes. */
+ins.doc-diff-added {
+  background-color: var(--pst-color-success-bg);
+  color: var(--pst-color-text-base);
+  text-decoration: none;
+}
+
+del.doc-diff-removed {
+  background-color: var(--pst-color-danger-bg);
+  color: var(--pst-color-text-base);
+}
