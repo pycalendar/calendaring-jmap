@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-_CONN_KEYS = {"url", "username", "password", "auth_type", "timeout"}
+_CONN_KEYS = {"url", "username", "password", "auth", "auth_type", "timeout"}
 _DEFAULT_CONFIG_PATH = Path.home() / ".config" / "calendaring-jmap" / "calendar.yaml"
 
 
@@ -67,8 +67,8 @@ def get_connection_params(
         config_file: Explicit path to a YAML config file. Defaults to the
             ``JMAP_CONFIG_FILE`` environment variable, then
             ``~/.config/calendaring-jmap/calendar.yaml``.
-        **explicit_params: ``url``, ``username``, ``password``, ``auth_type``,
-            ``timeout``. A value of ``None`` is treated as "not supplied",
+        **explicit_params: ``url``, ``username``, ``password``, ``auth``,
+            ``auth_type``, ``timeout``. A value of ``None`` is treated as "not supplied",
             not "unset": this lets a thin CLI wrapper pass every option
             through unconditionally without wiping out env vars for the
             ones the user left off.

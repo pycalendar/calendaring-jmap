@@ -5,7 +5,7 @@
 Sync incrementally
 ==================
 
-JMAP's state-based sync lets you fetch only what changed since the last call, without scanning the full calendar. See :doc:`../explanation/design` for why this differs from CalDAV-style polling.
+JMAP's state-based sync lets you fetch only what changed since the last call, without scanning the full calendar.
 
 Fetch a token, then the delta
 =============================
@@ -27,7 +27,7 @@ Fetch a token, then the delta
     for event_id in deleted:
         print("Deleted ID:", event_id)
 
-``added`` and ``modified`` are lists of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`. ``deleted`` is a list of event IDs: those objects no longer exist on the server, so their data cannot be fetched. The fourth element is the server's new sync token. Chaining straight from it avoids the race window a separate :meth:`~calendaring_jmap.client.JMAPClient.get_sync_token` round trip would open.
+``added`` and ``modified`` are lists of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`. ``deleted`` is a list of event IDs: those objects no longer exist on the server, so their data can't be fetched. The fourth element is the server's new sync token. Chaining straight from it avoids the race window a separate :meth:`~calendaring_jmap.client.JMAPClient.get_sync_token` round trip would open.
 
 Handle a truncated change list
 ==============================

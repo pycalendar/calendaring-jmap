@@ -7,8 +7,8 @@ Synchronous JMAP client.
 Wraps session establishment, HTTP communication, and method dispatching
 into a single object with a clean public API.
 
-Auth note: JMAP has no 401-challenge-retry dance (unlike CalDAV).
-Credentials are sent upfront on every request. A 401/403 is a hard failure.
+Auth note: JMAP has no 401-challenge-retry dance. Credentials are sent
+upfront on every request. A 401/403 is a hard failure.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ _DEFAULT_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY]
 _TASK_USING = [CORE_CAPABILITY, TASK_CAPABILITY]
 _PRINCIPALS_USING = [CORE_CAPABILITY, CALENDAR_CAPABILITY, PRINCIPALS_CAPABILITY]
 _CONTACTS_USING = [CORE_CAPABILITY, CONTACTS_CAPABILITY]
-#: PushSubscription is part of JMAP core (:rfc:`8620#section-7.2`), not a
+#: PushSubscription is part of JMAP core (RFC 8620 section 7.2), not a
 #: capability-gated extension, so no capability beyond core is ever needed.
 _PUSH_USING = [CORE_CAPABILITY]
 
@@ -142,7 +142,7 @@ class _JMAPClientBase:
         JMAP supports Basic and Bearer auth; Digest is not supported.
         When ``auth_type`` is ``None`` the type is inferred from the
         credentials supplied: a username triggers Basic, a password
-        alone triggers Bearer, and neither raises :class:`JMAPAuthError`.
+        alone triggers Bearer, and neither raises ``JMAPAuthError``.
         """
         effective_type = auth_type
         if effective_type is None:
@@ -194,13 +194,10 @@ class _JMAPClientBase:
 
     @staticmethod
     def _supports_principals(session: Session) -> bool:
-        """Return whether this account advertises :rfc:`9670` Principal support.
+        """Return whether this account advertises RFC 9670 Principal support.
 
-        This is the real gate for ``Principal/getAvailability``, not the
-        draft's own narrower ``:availability`` sub-capability: confirmed
-        live that Cyrus implements the method fully without ever
-        advertising that sub-capability, so checking for it would wrongly
-        skip Cyrus every time.
+        See ``get_availability`` for why this checks the base
+        capability, not the draft's own narrower sub-capability.
         """
         return _JMAPClientBase._account_supports(session, PRINCIPALS_CAPABILITY)
 
@@ -208,7 +205,7 @@ class _JMAPClientBase:
     def _current_user_principal_id(session: Session) -> str | None:
         """Return the caller's own Principal id from the session, if any.
 
-        :rfc:`9670#section-1.5.1`: ``currentUserPrincipalId`` is a property of the
+        RFC 9670 section 1.5.1: ``currentUserPrincipalId`` is a property of the
         ``urn:ietf:params:jmap:principals`` entry in ``accountCapabilities``.
         No ``Principal/query``/``Principal/get`` call is needed for this.
         """
@@ -271,8 +268,9 @@ class _JMAPClientBase:
     def _as_utc_datetime(local_datetime: str) -> str:
         """Convert one of ``get_availability``'s own UTC-treated
         ``start``/``end`` strings to the ``UTCDateTime`` format
-        ``Principal/getAvailability`` requires. Confirmed live that Cyrus
-        rejects a bare, unsuffixed value here with ``invalidArguments``.
+        ``Principal/getAvailability`` requires. Cyrus rejects a bare,
+        unsuffixed value here with ``invalidArguments``, verified against
+        a running instance.
         """
         return f"{local_datetime}Z"
 
@@ -326,7 +324,7 @@ class _JMAPClientBase:
         (draft-ietf-jmap-calendars-29 section 5.11.1 lists exactly
         ``inCalendar``, ``after``, ``before``, ``text``, ``title``,
         ``description``, ``location``, ``owner``, ``attendee``, ``uid``), so
-        unlike :meth:`_build_event_search_calls`'s own filters, these run in
+        unlike ``_build_event_search_calls``'s own filters, these run in
         Python against the already-fetched event, not on the server.
         A ``None`` argument is not checked at all, matching
         ``FilterCondition``'s own "zero properties specified means the
@@ -340,10 +338,10 @@ class _JMAPClientBase:
         matches ``participant_email`` and a different participant matches
         ``participant_role`` still matches both conditions.
 
-        Confirmed live that Cyrus drops a Link's ``rel: "enclosure"`` on
-        read-back, so ``has_attachment=True`` undercounts real attachments
-        there. Confirmed live that both Cyrus and Stalwart drop the
-        ``attendee`` role from a participant's ``roles`` map, so
+        Cyrus drops a Link's ``rel: "enclosure"`` on read-back (seen against
+        a running instance), so ``has_attachment=True`` undercounts real
+        attachments there. Both Cyrus and Stalwart drop the ``attendee``
+        role from a participant's ``roles`` map, so
         ``participant_role="attendee"`` undercounts on both servers.
         """
         if has_attachment is not None:
@@ -404,14 +402,10 @@ class _JMAPClientBase:
     @staticmethod
     def _jscal_start_to_utc_datetime(start: str, time_zone: str | None) -> str:
         """Convert a JSCalendar ``start``/``timeZone`` pair to a ``Z``-suffixed
-        ``UTCDateTime`` string, matching what ``Principal/getAvailability``
-        returns, so ``BusyInterval.start``/``.end`` have one consistent
-        format regardless of which path produced them (:rfc:`8984`'s own three
-        ``start`` shapes: already ``Z``-suffixed UTC, ``timeZone``-qualified,
-        or floating/naive with neither, see ``jscal_to_ical._start_to_dtstart``).
-        A floating start (no ``timeZone``) has no true UTC equivalent; it is
-        treated as UTC, matching ``get_availability``'s own documented
-        treatment of its ``start``/``end`` window parameters.
+        ``UTCDateTime`` string.
+
+        See ``BusyInterval`` for why this normalization exists and how a
+        floating start is treated.
         """
         if start.endswith("Z"):
             return start
@@ -431,9 +425,8 @@ class _JMAPClientBase:
     def _busy_intervals_from_events(cls, events: list[dict]) -> list[BusyInterval]:
         """Compute BusyInterval objects from raw event dicts for the fallback path.
 
-        :rfc:`8984#section-4.4.2`: ``freeBusyStatus`` is ``"free"`` or
-        ``"busy"``, default ``"busy"`` when absent. Events marked ``"free"``
-        don't count toward busy time.
+        See ``get_availability`` for the ``freeBusyStatus`` filtering
+        rule this implements.
         """
         intervals = []
         for event in events:
@@ -455,13 +448,11 @@ class _JMAPClientBase:
     def _build_event_update_patch(ical_str: str) -> tuple[dict, frozenset[str]]:
         """Build a JSCalendar PatchObject for a ``CalendarEvent/set`` update.
 
-        :rfc:`8620#section-5.3` merge semantics preserve properties absent from
-        the patch, so any optional property removed client-side must be
-        explicitly nulled to actually clear it server-side.  Returns the patch
-        together with the set
-        of keys that were null-injected purely for this cleanup (i.e. were not
-        present in the converted iCalendar) so the caller can drop them if the
-        server refuses to null a property it does not support.
+        See ``update_event`` for why absent properties are explicitly
+        nulled. Returns the patch together with the set of keys that were
+        null-injected purely for this cleanup (not present in the converted
+        iCalendar), so the caller can drop them if the server refuses to
+        null a property it does not support.
         """
         patch = ical_to_jscal(ical_str)
         patch.pop("uid", None)  # uid is server-immutable after creation; patch must omit it
@@ -487,7 +478,7 @@ class _JMAPClientBase:
 
         Returns the set of droppable keys when the failure is exactly this case,
         or ``None`` when the update succeeded or failed for a genuine reason (in
-        which case the caller proceeds to :meth:`_parse_update_response`,
+        which case the caller proceeds to ``_parse_update_response``,
         which raises the real error).  Some servers report only one offending
         property per response, so the caller retries in a loop, dropping the
         reported keys until the update succeeds or hits a genuine error; each
@@ -526,9 +517,9 @@ class _JMAPClientBase:
         Shared by every ``_parse_*`` method whose whole job is "find one
         response by method name, hand its args to a parser, otherwise
         return an empty list" (``parser`` can itself bind extra state onto
-        each result, e.g. :meth:`_parse_get_calendars`'s own client/account
+        each result, e.g. ``_parse_get_calendars``'s own client/account
         binding). A method that needs to raise instead of returning ``[]``
-        (e.g. :meth:`_parse_get_sync_token_response`) doesn't fit this
+        (e.g. ``_parse_get_sync_token_response``) doesn't fit this
         shape and isn't a caller.
         """
         for name, resp_args, _ in responses:
@@ -564,7 +555,7 @@ class _JMAPClientBase:
     def _no_set_response_error(api_url: str, set_method: str) -> JMAPMethodError:
         """Build the error raised when a batched response never contains the
         expected ``set_method`` entry at all (as opposed to containing it
-        with a per-object failure, which goes through :meth:`_raise_set_error`
+        with a per-object failure, which goes through ``_raise_set_error``
         instead). Shared by all three ``_parse_*_response`` methods below."""
         return JMAPMethodError(url=api_url, reason=f"No {set_method} response")
 
@@ -633,9 +624,9 @@ class _JMAPClientBase:
         covers a spec-compliant server, or another client's participant,
         that only ever set ``calendarAddress``.
 
-        Shared by :meth:`_find_participant_id_by_email` (which scans a whole
+        Shared by ``_find_participant_id_by_email`` (which scans a whole
         ``participants`` dict for the caller's own participant id) and
-        :meth:`_event_matches_search_filters` (which uses this per-participant
+        ``_event_matches_search_filters`` (which uses this per-participant
         check directly as a filter predicate).
         """
         candidate = participant.get("email") or participant.get("calendarAddress") or ""
@@ -648,10 +639,10 @@ class _JMAPClientBase:
     ) -> str:
         """Return the id of the entry in ``participants`` whose email is ``own_email``.
 
-        See :meth:`_participant_matches_email` for the matching rule.
+        See ``_participant_matches_email`` for the matching rule.
 
-        Shared by :meth:`JMAPClient._find_own_participant_id` and
-        :meth:`AsyncJMAPClient._find_own_participant_id`.
+        Shared by ``JMAPClient._find_own_participant_id`` and
+        ``AsyncJMAPClient._find_own_participant_id``.
 
         Raises:
             JMAPMethodError: If no participant matches ``own_email``.
@@ -739,11 +730,11 @@ class _JMAPClientBase:
 
         Shared by every ``_parse_*_changes_response`` (CalendarEvent, Task):
         each one differs only in the method name to match and the parser
-        function that turns ``resp_args`` into the 6-tuple :rfc:`8620#section-5.2`
+        function that turns ``resp_args`` into the 6-tuple RFC 8620 section 5.2
         defines.
 
         Returns ``(created_ids, updated_ids, destroyed_ids, new_sync_token)``.
-        Raises :class:`JMAPMethodError` when the server truncated the result.
+        Raises ``JMAPMethodError`` when the server truncated the result.
         """
         created_ids: list[str] = []
         updated_ids: list[str] = []
@@ -894,9 +885,9 @@ class _JMAPClientBase:
         ``due_before``/``due_after`` have no corresponding Task/query filter
         property (draft-ietf-jmap-tasks section 4.13 never defines one), so
         they run in Python against the already-fetched task's ``due``
-        (:rfc:`8984#section-5.2.1`, LocalDateTime, lexicographically ordered).
+        (RFC 8984 section 5.2.1, LocalDateTime, lexicographically ordered).
         A task with no ``due`` set does not match either when given.
-        ``progress`` matches :rfc:`8984#section-5.2.5`'s own value, treating
+        ``progress`` matches RFC 8984 section 5.2.5's own value, treating
         an absent value as ``"needs-action"``. That section's real default is
         a derivation from participant ``progress`` values, not an
         unconditional ``"needs-action"``, but this client never sets a
@@ -904,8 +895,8 @@ class _JMAPClientBase:
         ``"needs-action"`` for any task this client can create.
 
         ``text`` is normally sent server-side via ``Task/query``'s filter
-        (see :meth:`_build_task_search_calls`) and left ``None`` here, so
-        this check is skipped; :meth:`_search_tasks_via_fallback` is the
+        (see ``_build_task_search_calls``) and left ``None`` here, so
+        this check is skipped; ``_search_tasks_via_fallback`` is the
         only caller that passes it, since a server with no ``Task/query``
         support at all needs every filter, including ``text``, applied
         client-side. Matches as a case-insensitive substring of ``title``,
@@ -934,9 +925,10 @@ class _JMAPClientBase:
         server doesn't support ``Task/query`` (or the tasks capability at
         all), as opposed to a genuine failure that should propagate.
 
-        Confirmed live this project's own test servers reject an
-        unsupported capability at the request level, not the method level,
-        so this check (unlike :meth:`_should_fall_back_to_query`'s
+        Tested against both of this project's own test servers: each
+        rejects an unsupported capability at the request level, not the
+        method level,
+        so this check (unlike ``_should_fall_back_to_query``'s
         method-level ``error_type`` check) inspects the HTTP error body
         instead. Cyrus returns ``unknownCapability``; Stalwart returns
         ``notRequest`` for any capability it doesn't recognize at all
@@ -961,15 +953,15 @@ class _JMAPClientBase:
     def _should_fall_back_from_task_query(error: Exception) -> bool:
         """Return whether ``error``, raised by the primary ``Task/query``
         path, means ``search_tasks`` should retry via
-        :meth:`_search_tasks_via_fallback`, as opposed to propagating.
+        ``_search_tasks_via_fallback``, as opposed to propagating.
 
         Shared by the sync and async ``search_tasks``: both catch
         ``(requests.HTTPError, JMAPMethodError)`` around the same primary
         call and need the identical two-way decision, a method-level
         ``error_type`` check for ``JMAPMethodError``
-        (:meth:`_should_fall_back_to_query`, the same one
+        (``_should_fall_back_to_query``, the same one
         ``get_availability`` uses) or a request-level body check for
-        ``requests.HTTPError`` (:meth:`_is_task_query_unsupported_http_error`).
+        ``requests.HTTPError`` (``_is_task_query_unsupported_http_error``).
         """
         if isinstance(error, JMAPMethodError):
             return _JMAPClientBase._should_fall_back_to_query(error.error_type)
@@ -1032,9 +1024,9 @@ class _JMAPClientBase:
     def _check_blob_response(response, url: str) -> None:
         """Raise on an HTTP error from a raw blob upload or download.
 
-        Shared by :meth:`upload_attachment`/:meth:`download_attachment` on
+        Shared by ``upload_attachment``/``download_attachment`` on
         both the sync and async client. Same 401/403 handling as
-        :func:`~calendaring_jmap.session.fetch_session`; any other non-2xx
+        ``fetch_session``; any other non-2xx
         (e.g. 404 for an unknown blobId, confirmed live on both Cyrus and
         Stalwart) surfaces as a plain HTTP error, since neither blob call
         has a JMAP methodResponses envelope to carry a JMAP-style error in.
@@ -1059,11 +1051,11 @@ class _JMAPClientBase:
     ) -> str:
         """Expand the Session's ``downloadUrl`` template for one blob.
 
-        Shared by :meth:`download_attachment`/:meth:`attach_to_event` on
+        Shared by ``download_attachment``/``attach_to_event`` on
         both the sync and async client. ``content_type``/``name`` are taken
-        as given: :meth:`download_attachment` passes ``or ""`` for its own
+        as given: ``download_attachment`` passes ``or ""`` for its own
         optional parameters (see its docstring for why that's safe);
-        :meth:`attach_to_event` always has real values, since both become
+        ``attach_to_event`` always has real values, since both become
         properties on the Link it writes.
         """
         download_url = cls._require_blob_url(session.download_url, "downloadUrl", session.api_url)
@@ -1116,9 +1108,9 @@ class JMAPClient(_JMAPClientBase):
     def close(self) -> None:
         """Release the persistent HTTP session and its connection pool.
 
-        Only needed when the client was not used as a context manager -- the
+        Only needed when the client was not used as a context manager: the
         documented Quick Start builds one directly, and without this there
-        was no way to hand the sockets back.  Idempotent; the session is
+        was no way to hand the sockets back. Idempotent; the session is
         recreated on the next request.
         """
         if self._http_session is not None:
@@ -1540,9 +1532,9 @@ class JMAPClient(_JMAPClientBase):
 
         Args:
             blob_id: The blob id, as returned by :meth:`upload_attachment`.
-            content_type: Media type of the blob, if known. Confirmed live
-                against Cyrus and Stalwart that both look up a blob by
-                ``blobId`` alone: an omitted or wrong ``content_type``/
+            content_type: Media type of the blob, if known. Both Cyrus and
+                Stalwart look up a blob by ``blobId`` alone, tested
+                directly against each: an omitted or wrong ``content_type``/
                 ``filename`` only affects the response's own
                 ``Content-Type``/``Content-Disposition`` headers, not
                 whether the download succeeds.
@@ -1669,7 +1661,7 @@ class JMAPClient(_JMAPClientBase):
         JMAP participant ids are server-assigned per event and cannot be
         derived or guessed, so responding to an invitation requires fetching
         the live event first. Only the ``participants`` property is fetched,
-        not the whole event. See :meth:`_find_participant_id_by_email` for
+        not the whole event. See ``_find_participant_id_by_email`` for
         the matching rules.
 
         Raises:
@@ -1764,6 +1756,12 @@ class JMAPClient(_JMAPClientBase):
 
     def update_event(self, event_id: str, ical_str: str, account_id: str | None = None) -> None:
         """Update a calendar event from an iCalendar string.
+
+        A property present on the server's own copy but absent from
+        ``ical_str`` is explicitly cleared, not left alone: :rfc:`8620#section-5.3`
+        merge semantics mean an omitted property would otherwise be
+        preserved rather than removed, so this nulls it to actually drop it
+        server-side.
 
         Args:
             event_id: The JMAP event ID to update.
@@ -1861,9 +1859,9 @@ class JMAPClient(_JMAPClientBase):
         participant matches ``participant_email`` and a different
         participant matches ``participant_role`` still matches both.
 
-        Confirmed live that Cyrus drops a Link's ``rel: "enclosure"`` on
-        read-back, so ``has_attachment=True`` misses real attachments there.
-        Confirmed live that both Cyrus and Stalwart drop the ``attendee``
+        Cyrus drops a Link's ``rel: "enclosure"`` on read-back, confirmed
+        against a running instance, so ``has_attachment=True`` misses real
+        attachments there. Both Cyrus and Stalwart drop the ``attendee``
         role from a participant's ``roles`` map, so
         ``participant_role="attendee"`` misses matches on both servers.
 
@@ -1877,7 +1875,7 @@ class JMAPClient(_JMAPClientBase):
                 (:meth:`~calendaring_jmap.objects.attachment.JMAPAttachment.is_attachment`).
             participant_email: Only events with a participant matching this
                 email (case-insensitive, falling back to ``calendarAddress``;
-                see :meth:`_participant_matches_email` for the matching
+                see ``_participant_matches_email`` for the matching
                 rule). Matches against a participant's
                 ``email``/``calendarAddress`` property, never
                 ``participantId`` (a server-assigned id with no email
@@ -1895,8 +1893,9 @@ class JMAPClient(_JMAPClientBase):
             List of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`
             instances.  ``parent`` is ``None`` on these objects since no
             :class:`~calendaring_jmap.objects.calendar.JMAPCalendar` is available at
-            the client level; use :meth:`JMAPCalendar.search` if you need ``parent``
-            set.
+            the client level; use
+            :meth:`~calendaring_jmap.objects.calendar.JMAPCalendar.search`
+            if you need ``parent`` set.
         """
         return self._search(
             calendar_id=calendar_id,
@@ -1925,7 +1924,12 @@ class JMAPClient(_JMAPClientBase):
         ``CalendarEvent/query`` scan of that account's own calendars when
         the account doesn't advertise :rfc:`9670` Principal support at all, the
         call fails with ``unknownMethod``/``accountNotSupportedByMethod``, or
-        ``account_id`` isn't the session's own account.
+        ``account_id`` isn't the session's own account. The check for Principal
+        support itself is the base :rfc:`9670#section-1.5.1` Principal
+        capability, not the draft's own narrower ``:availability``
+        sub-capability: confirmed live that Cyrus implements this method fully
+        without ever advertising that sub-capability, so gating on it would
+        wrongly skip Cyrus every time.
 
         ``Principal/getAvailability`` never carries an explicit ``accountId``
         (confirmed live: Cyrus rejects one in this method's own args), so it
@@ -1938,6 +1942,12 @@ class JMAPClient(_JMAPClientBase):
         same limitation :meth:`share_calendar` already has for Principal
         ids in general).
 
+        The fallback path builds each interval from a matching event's own
+        ``freeBusyStatus`` (:rfc:`8984#section-4.4.2`): an event marked
+        ``"free"`` is excluded from the result entirely, and an event with
+        no ``freeBusyStatus`` at all is treated as ``"busy"``, the spec's
+        own default.
+
         Args:
             account_ids: JMAP accounts to check, one entry in the result per
                 account. Only the session's own account can use the primary
@@ -1947,8 +1957,8 @@ class JMAPClient(_JMAPClientBase):
             end: End of the period, exclusive (``YYYY-MM-DDTHH:MM:SS``,
                 treated as UTC).
             show_details: If true, populate each interval's ``event`` where
-                permitted. Confirmed live: on Stalwart this needs the
-                account's server to support returning event details at all;
+                permitted. On Stalwart this needs the account's server to
+                support returning event details at all, verified directly:
                 omitting ``eventProperties`` there returns ``event: None``
                 even with ``show_details=True``. On Cyrus, details are
                 returned by default.
@@ -2013,7 +2023,7 @@ class JMAPClient(_JMAPClientBase):
         support Contacts in general but a different ``account_id`` lacks
         it specifically, a genuine error surfaces normally instead, the
         same as :meth:`search_contacts` always does (see
-        :meth:`_can_skip_contacts_request` for why only the session's own
+        ``_can_skip_contacts_request`` for why only the session's own
         account gets the graceful behavior).
 
         Args:
@@ -2058,25 +2068,27 @@ class JMAPClient(_JMAPClientBase):
         :rfc:`9610` Contacts support raises normally here, not an empty
         list: this method's whole purpose is resolving contact information
         for something the caller is about to act on (e.g. an invitation),
-        so silently returning nothing risks going unnoticed. Confirmed live
-        that the actual error is either a request-level ``requests.HTTPError``
-        (HTTP 400, ``unknownCapability``) if the server has no Contacts
-        support at all, or a method-level ``JMAPMethodError`` with
-        ``error_type`` ``"accountNotSupportedByMethod"`` if the server
-        supports Contacts but this particular account doesn't.
+        so silently returning nothing risks going unnoticed. Tested
+        directly, the actual error is either a request-level
+        ``requests.HTTPError`` (HTTP 400, ``unknownCapability``) if the
+        server has no Contacts support at all, or a method-level
+        ``JMAPMethodError`` with ``error_type``
+        ``"accountNotSupportedByMethod"`` if the server supports Contacts
+        but this particular account doesn't.
 
         Args:
-            text: Free-text search across the whole card. Confirmed live
-                that Cyrus matches this as a substring against the name, not
-                exact-only. Confirmed live that Stalwart v0.16.21 does not
-                match this against the card's name at all, only against the
-                email address (the same reach ``email`` already has there):
-                a name-only search that works on Cyrus can silently return
-                nothing on Stalwart. Use ``email`` when the value being
-                searched for might be an email address.
-            email: Match against any address in the card's ``emails``.
-                Confirmed live that both Cyrus and Stalwart match this as a
-                substring too, e.g. ``"alice"`` matches
+            text: Free-text search across the whole card. Against a running
+                Cyrus instance, this matches as a substring against the
+                name, not exact-only. Stalwart v0.16.21 behaves
+                differently: it doesn't match against the card's name at
+                all, only against the email address (the same reach
+                ``email`` already has there), so a name-only search that
+                works on Cyrus can silently return nothing on Stalwart. Use
+                ``email`` when the value being searched for might be an
+                email address.
+            email: Match against any address in the card's ``emails``. Both
+                Cyrus and Stalwart match this as a substring too, verified
+                directly, e.g. ``"alice"`` matches
                 ``"alice@example.com"``.
             account_id: Pass a different account here to search an address
                 book shared with you.
@@ -2129,7 +2141,7 @@ class JMAPClient(_JMAPClientBase):
                 combination creating this subscription, so the caller can
                 recognize its own subscriptions later (e.g. to renew or
                 unsubscribe them) even after losing other local state.
-                Confirmed live that neither test server generates or
+                Tested against both: neither test server generates or
                 substitutes one, so a fixed value across every install of
                 a library or app would collide across devices; the RFC's
                 own text requires this to differ per device and per
@@ -2146,9 +2158,9 @@ class JMAPClient(_JMAPClientBase):
 
         Raises:
             JMAPMethodError: If the server rejects the create request, or
-                does not implement PushSubscription at all. Confirmed live
-                that Cyrus does not implement ``PushSubscription/set``
-                (``unknownMethod``); Stalwart does.
+                does not implement PushSubscription at all. Cyrus doesn't
+                implement ``PushSubscription/set`` (``unknownMethod``),
+                confirmed against a running instance; Stalwart does.
         """
         if types is None:
             types = ["CalendarEvent"]
@@ -2160,8 +2172,8 @@ class JMAPClient(_JMAPClientBase):
         )
 
     def _update_push_subscription(self, subscription_id: str, patch: dict) -> None:
-        """Shared implementation for :meth:`confirm_push_verification` and
-        :meth:`renew_push`: both are a single-field ``PushSubscription/set``
+        """Shared implementation for ``confirm_push_verification`` and
+        ``renew_push``: both are a single-field ``PushSubscription/set``
         update, differing only in which field they patch."""
         session = self._get_session()
         call = build_push_subscription_set_update(subscription_id, patch)
@@ -2180,9 +2192,9 @@ class JMAPClient(_JMAPClientBase):
         Required to complete :meth:`subscribe_push`'s handshake: the
         server "MUST NOT make any further requests to the URL" until this
         is called with the matching code (:rfc:`8620#section-7.2.2`).
-        Confirmed live that Stalwart rejects a wrong code with
-        ``invalidProperties`` rather than silently ignoring it. See
-        :meth:`subscribe_push` for the ``account_id`` parameter note.
+        Stalwart rejects a wrong code with ``invalidProperties`` rather
+        than silently ignoring it, verified against a running instance.
+        See :meth:`subscribe_push` for the ``account_id`` parameter note.
 
         Args:
             subscription_id: The JMAP PushSubscription ID returned by
@@ -2436,8 +2448,8 @@ class JMAPClient(_JMAPClientBase):
 
         Calls ``Task/get`` with an empty ID list, so no task data is
         transferred, only the ``state`` field from the response. Reads the
-        ``Task`` type's own state counter, not ``TaskList``'s: RFC 8620
-        section 5.2's ``/changes`` is scoped per type, and
+        ``Task`` type's own state counter, not ``TaskList``'s: :rfc:`8620#section-5.2`'s
+        ``/changes`` is scoped per type, and
         :meth:`get_tasks_by_sync_token` calls ``Task/changes``, which only
         accepts a state previously returned for ``Task`` itself.
 
@@ -2509,9 +2521,10 @@ class JMAPClient(_JMAPClientBase):
         the same fallback shape :meth:`get_availability` already uses for
         ``Principal/getAvailability``.
 
-        Confirmed live this fallback cannot help against either Cyrus or
-        Stalwart today: both reject the entire ``urn:ietf:params:jmap:tasks``
-        capability, not ``Task/query`` specifically, so the fallback's own
+        Neither server makes this fallback worth reaching today, tested
+        directly against both: Cyrus and Stalwart reject the entire
+        ``urn:ietf:params:jmap:tasks`` capability, not ``Task/query``
+        specifically, so the fallback's own
         ``Task/get`` call (which needs that same capability) fails
         identically and the error still propagates. It only helps a future
         server that implements the tasks capability well enough for
@@ -2529,7 +2542,7 @@ class JMAPClient(_JMAPClientBase):
             text: Free-text search. Sent server-side via ``Task/query`` on
                 the primary path; matched as a case-insensitive substring of
                 ``title`` on the fallback path (see
-                :meth:`_task_matches_search_filters`).
+                ``_task_matches_search_filters``).
             due_before: Only tasks whose ``due`` sorts before this value
                 (:rfc:`8984#section-5.2.1` LocalDateTime,
                 ``YYYY-MM-DDTHH:MM:SS``). A task with no ``due`` set never

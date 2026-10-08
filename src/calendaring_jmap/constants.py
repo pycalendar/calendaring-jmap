@@ -28,11 +28,11 @@ TASK_CAPABILITY = "urn:ietf:params:jmap:tasks"
 PRINCIPALS_CAPABILITY = "urn:ietf:params:jmap:principals"
 
 #: JMAP Contacts capability (:rfc:`9610`). Required to use AddressBook/ContactCard
-#: methods. Confirmed live that both Cyrus and Stalwart advertise this capability,
+#: methods. Both Cyrus and Stalwart advertise this capability, verified directly,
 #: under the same account already used for calendars on both servers.
 CONTACTS_CAPABILITY = "urn:ietf:params:jmap:contacts"
 
-# Participant.participationStatus values (:rfc:`8984#section-4.4.6`).
+# Participant.participationStatus values (RFC 8984 section 4.4.6).
 # Default is PARTICIPATION_STATUS_NEEDS_ACTION when the property is absent.
 PARTICIPATION_STATUS_NEEDS_ACTION = "needs-action"
 PARTICIPATION_STATUS_ACCEPTED = "accepted"
@@ -48,8 +48,8 @@ PARTICIPATION_STATUS_DELEGATED = "delegated"
 BUSY_STATUS_UNAVAILABLE = "unavailable"
 
 #: Link.rel value (:rfc:`8984#section-1.4.11`) marking a Link as an
-#: attachment. The "rel" property itself is defined in RFC 8984, but this
-#: specific value originates in the IANA Link Relations registry's
+#: attachment. The "rel" property itself is defined in that same section,
+#: but this specific value originates in the IANA Link Relations registry's
 #: original seed list, :rfc:`4287#section-4.2.7.2` (Atom), not RFC 8984
 #: itself.
 LINK_REL_ENCLOSURE = "enclosure"

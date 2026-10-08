@@ -120,12 +120,12 @@ def _duration_to_timedelta(duration_str: str) -> timedelta:
 def _format_local_dt(dt: datetime | date, tzinfo: tzinfo_t | None = None) -> str:
     """Format a datetime or date as a JSCalendar LocalDateTime string.
 
-    :rfc:`8984#section-1.4.5` requires LocalDateTime (no Z suffix) for
+    RFC 8984 section 1.4.5 requires LocalDateTime (no Z suffix) for
     override keys and RRULE ``until`` values, and those are expressed in
     the *event's* timezone.  An aware datetime is therefore converted into ``tzinfo``
     before the offset is dropped; merely stripping it would shift the value
     by the UTC offset, and a floating ``UNTIL`` against a TZID ``DTSTART``
-    is forbidden outright by :rfc:`5545#section-3.3.10`.
+    is forbidden outright by RFC 5545 section 3.3.10.
 
     ``tzinfo`` is the event's timezone, normally ``DTSTART.dt.tzinfo``.  When
     it is None the event is floating or all-day: there is nothing to convert

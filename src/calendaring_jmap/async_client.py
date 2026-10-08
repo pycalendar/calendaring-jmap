@@ -6,7 +6,7 @@ Asynchronous JMAP client.
 
 Mirrors JMAPClient with all public methods as coroutines.
 Uses niquests' AsyncSession for HTTP: the one part of calendaring-jmap with
-no fallback to another HTTP library. See :mod:`calendaring_jmap._http`.
+no fallback to another HTTP library. See ``calendaring_jmap._http``.
 
 All response-parsing logic lives in _JMAPClientBase (client.py); each method
 here is a ~3-line async wrapper: get session, send request, delegate to parser.
@@ -132,8 +132,8 @@ class AsyncJMAPClient(_JMAPClientBase):
     async def aclose(self) -> None:
         """Release the persistent HTTP session and its connection pool.
 
-        Only needed when the client was not used as an async context manager
-        -- the documented Quick Start builds one directly.  Idempotent; the
+        Only needed when the client was not used as an async context manager:
+        the documented Quick Start builds one directly. Idempotent; the
         session is recreated on the next request.
         """
         if self._http_session is not None:
@@ -536,7 +536,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> str:
         """Upload binary data as a JMAP blob.
 
-        See :meth:`JMAPClient.upload_attachment` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.upload_attachment` for the full semantics.
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -557,7 +557,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> bytes:
         """Download a JMAP blob by id.
 
-        See :meth:`JMAPClient.download_attachment` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.download_attachment` for the full semantics.
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -584,7 +584,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> None:
         """Attach an uploaded blob to a calendar event.
 
-        See :meth:`JMAPClient.attach_to_event` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.attach_to_event` for the full semantics.
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -605,7 +605,8 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> list[JMAPAttachment]:
         """Return the attachments on a calendar event.
 
-        See :meth:`JMAPClient.get_event_attachments` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.get_event_attachments`
+        for the full semantics.
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -621,7 +622,7 @@ class AsyncJMAPClient(_JMAPClientBase):
         """Return the participant id in ``event_id`` whose email is ``own_email``.
 
         Only the ``participants`` property is fetched, not the whole event.
-        See :meth:`JMAPClient._find_participant_id_by_email` for the matching rules.
+        See ``JMAPClient._find_participant_id_by_email`` for the matching rules.
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -659,7 +660,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> None:
         """Accept a meeting invitation, notifying the organizer.
 
-        See :meth:`JMAPClient.accept_invitation` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.accept_invitation` for the full semantics.
         """
         await self._respond_to_invitation(
             event_id, own_email, PARTICIPATION_STATUS_ACCEPTED, account_id=account_id
@@ -777,7 +778,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> list[JMAPCalendarObject]:
         """Search for calendar events.
 
-        See :meth:`JMAPClient.search_events` for the full semantics,
+        See :meth:`~calendaring_jmap.client.JMAPClient.search_events` for the full semantics,
         including why ``has_attachment``/``participant_email``/
         ``participation_status``/``participant_role`` filter client-side and
         their confirmed server-specific false-negatives.
@@ -803,7 +804,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> dict[str, list[BusyInterval]]:
         """Return busy intervals for each of your own accounts over a time period.
 
-        See :meth:`JMAPClient.get_availability` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.get_availability` for the full semantics.
         """
         session = await self._get_session()
         result: dict[str, list[BusyInterval]] = {}
@@ -848,7 +849,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     async def get_address_books(self, account_id: str | None = None) -> list[JMAPAddressBook]:
         """Fetch all address books for an account.
 
-        See :meth:`JMAPClient.get_address_books` for the full semantics,
+        See :meth:`~calendaring_jmap.client.JMAPClient.get_address_books` for the full semantics,
         including the capability-fallback behavior.
         """
         session = await self._get_session()
@@ -869,7 +870,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> list[JMAPContact]:
         """Search for contact cards.
 
-        See :meth:`JMAPClient.search_contacts` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.search_contacts` for the full semantics.
         """
         session = await self._get_session()
         target_account = self._resolve_account(session, account_id)
@@ -885,7 +886,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> str:
         """Register a push subscription.
 
-        See :meth:`JMAPClient.subscribe_push` for the full semantics,
+        See :meth:`~calendaring_jmap.client.JMAPClient.subscribe_push` for the full semantics,
         including why this client cannot complete the verification
         handshake by itself.
         """
@@ -899,8 +900,8 @@ class AsyncJMAPClient(_JMAPClientBase):
         )
 
     async def _update_push_subscription(self, subscription_id: str, patch: dict) -> None:
-        """Shared implementation for :meth:`confirm_push_verification` and
-        :meth:`renew_push`. See :meth:`JMAPClient._update_push_subscription`."""
+        """Shared implementation for ``confirm_push_verification`` and
+        ``renew_push``. See ``JMAPClient._update_push_subscription``."""
         session = await self._get_session()
         call = build_push_subscription_set_update(subscription_id, patch)
         responses = await self._request([call], using=_PUSH_USING)
@@ -915,7 +916,8 @@ class AsyncJMAPClient(_JMAPClientBase):
     async def confirm_push_verification(self, subscription_id: str, verification_code: str) -> None:
         """Submit the verification code the server POSTed to ``callback_url``.
 
-        See :meth:`JMAPClient.confirm_push_verification` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.confirm_push_verification`
+        for the full semantics.
         """
         await self._update_push_subscription(
             subscription_id, {"verificationCode": verification_code}
@@ -924,14 +926,14 @@ class AsyncJMAPClient(_JMAPClientBase):
     async def renew_push(self, subscription_id: str, expires: str | None = None) -> None:
         """Extend (or shorten) a push subscription's expiry.
 
-        See :meth:`JMAPClient.renew_push` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.renew_push` for the full semantics.
         """
         await self._update_push_subscription(subscription_id, {"expires": expires})
 
     async def unsubscribe_push(self, subscription_id: str) -> None:
         """Destroy a push subscription.
 
-        See :meth:`JMAPClient.unsubscribe_push` for the full semantics.
+        See :meth:`~calendaring_jmap.client.JMAPClient.unsubscribe_push` for the full semantics.
         """
         session = await self._get_session()
         call = build_push_subscription_set_destroy(subscription_id)
@@ -1139,8 +1141,8 @@ class AsyncJMAPClient(_JMAPClientBase):
 
         Calls ``Task/get`` with an empty ID list, so no task data is
         transferred, only the ``state`` field from the response. Reads the
-        ``Task`` type's own state counter, not ``TaskList``'s: RFC 8620
-        section 5.2's ``/changes`` is scoped per type, and
+        ``Task`` type's own state counter, not ``TaskList``'s: :rfc:`8620#section-5.2`'s
+        ``/changes`` is scoped per type, and
         :meth:`get_tasks_by_sync_token` calls ``Task/changes``, which only
         accepts a state previously returned for ``Task`` itself.
 
@@ -1206,7 +1208,7 @@ class AsyncJMAPClient(_JMAPClientBase):
     ) -> list[dict]:
         """Search for tasks.
 
-        See :meth:`JMAPClient.search_tasks` for the full semantics,
+        See :meth:`~calendaring_jmap.client.JMAPClient.search_tasks` for the full semantics,
         including why ``due_before``/``due_after``/``progress`` filter
         client-side and what the ``Task/query``-unsupported fallback can
         and cannot help with.

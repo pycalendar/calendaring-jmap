@@ -8,10 +8,10 @@ These are pure functions: no HTTP, no state. They build the request
 tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
-Method shapes follow :rfc:`8620#section-5.1` (get), :rfc:`8620#section-5.2`
-(changes), :rfc:`8620#section-5.3` (set), :rfc:`8620#section-5.5` (query);
+Method shapes follow RFC 8620 section 5.1 (get), RFC 8620 section 5.2
+(changes), RFC 8620 section 5.3 (set), RFC 8620 section 5.5 (query);
 Task-specific properties are defined in draft-ietf-jmap-tasks (built on
-:rfc:`8984`). draft-ietf-jmap-tasks section 4.13 never defines a Task-specific
+RFC 8984). draft-ietf-jmap-tasks section 4.13 never defines a Task-specific
 query filter object (a literal author TODO in the draft text), so
 ``build_task_query`` accepts only whatever filter properties the caller
 already knows the server accepts; no ``TaskFilter`` shape is assumed here.
@@ -130,8 +130,8 @@ def parse_task_changes(
     Returns:
         A 6-tuple ``(old_state, new_state, has_more_changes, created, updated, destroyed)``.
         ``Task/changes`` uses the identical shape as
-        :func:`calendaring_jmap._methods.event.parse_event_changes`
-        (draft-ietf-jmap-tasks section 4.10, :rfc:`8620#section-5.2`).
+        ``parse_event_changes``
+        (draft-ietf-jmap-tasks section 4.10, RFC 8620 section 5.2).
     """
     return (
         response_args.get("oldState", ""),
@@ -156,7 +156,7 @@ def build_task_query(
         account_id: The JMAP accountId to query.
         filter_condition: A filter dict. draft-ietf-jmap-tasks section 4.13 never
             defines a Task-specific filter object; only ``text`` is sent by
-            :meth:`~calendaring_jmap.client.JMAPClient.search_tasks`, matching
+            ``search_tasks``, matching
             what that method actually applies server-side.
         sort: List of ``Comparator`` dicts, e.g.
             ``[{"property": "due", "isAscending": True}]``.
@@ -174,7 +174,7 @@ def build_task_query(
 
 def build_task_get_by_query_result(account_id: str, properties: list[str] | None = None) -> tuple:
     """Build a ``Task/get`` call that back-references the ids from
-    the ``Task/query`` call :func:`build_task_query` builds.
+    the ``Task/query`` call ``build_task_query`` builds.
 
     Args:
         account_id: The JMAP accountId, must match the query call's.
@@ -182,7 +182,7 @@ def build_task_get_by_query_result(account_id: str, properties: list[str] | None
 
     Returns:
         A 3-tuple ``("Task/get", arguments_dict, call_id)``, meant
-        to be appended after :func:`build_task_query`'s own return value in
+        to be appended after ``build_task_query``'s own return value in
         the same ``methodCalls`` list.
     """
     return build_get_by_query_result(
@@ -264,6 +264,6 @@ def parse_task_set(
     """Parse the arguments dict from a ``Task/set`` method response.
 
     Returns a 6-tuple ``(created, updated, destroyed, not_created, not_updated, not_destroyed)``.
-    See :func:`calendaring_jmap._methods.parse_set_response` for field semantics.
+    See ``parse_set_response`` for field semantics.
     """
     return parse_set_response(response_args)

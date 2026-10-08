@@ -1,0 +1,1 @@
+Added an explanation-page section for why the error hierarchy is split into a generic base and a JMAP-specific layer, fixing a cross-reference in the errors how-to page that previously pointed at nothing.

@@ -36,7 +36,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-async = ["niquests[asyncio]"]
 requests = ["requests>=2.34.2"]
 dev = [
   "pytest==9.1.1",
@@ -53,18 +52,21 @@ dev = [
 docs = [
   "sphinx==9.1.0",
   "pydata-sphinx-theme==0.21.0",
+  "matplotlib==3.11.2",
   "sphinx-autobuild==2025.8.25",
   "sphinx-copybutton==0.5.2",
   "sphinx-design==0.7.0",
   "sphinx-issues==6.0.0",
+  "sphinx-last-updated-by-git==0.3.8",
   "sphinx-notfound-page==1.1.0",
+  "sphinxext-opengraph==0.13.0",
 ]
 
 [project.urls]
 Repository = "https://github.com/pycalendar/calendaring-jmap"
 Issues = "https://github.com/pycalendar/calendaring-jmap/issues"
 Documentation = "https://calendaring-jmap.readthedocs.io/en/stable/"
-Changelog = "https://calendaring-jmap.readthedocs.io/en/stable/reference/changelog.html"
+Changelog = "https://calendaring-jmap.readthedocs.io/en/stable/changelog.html"
 
 [tool.hatch.version]
 source = "vcs"
@@ -112,7 +114,7 @@ testpaths = ["src/calendaring_jmap/tests"]
 
 [tool.towncrier]
 directory = "news/"
-filename = "CHANGES.rst"
+filename = "docs/changelog.rst"
 issue_format = "`#{issue} <https://github.com/pycalendar/calendaring-jmap/issues/{issue}>`_"
 start_string = ".. towncrier release notes start\n"
 title_format = "{version} ({project_date})"

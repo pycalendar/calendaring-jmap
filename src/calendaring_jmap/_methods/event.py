@@ -8,9 +8,9 @@ These are pure functions: no HTTP, no state. They build the request
 tuples that go into a ``methodCalls`` list, and parse the corresponding
 ``methodResponses`` entries.
 
-Method shapes follow :rfc:`8620#section-3.3` (get), :rfc:`8620#section-3.4`
-(changes), :rfc:`8620#section-3.5` (set), :rfc:`8620#section-3.6` (query),
-:rfc:`8620#section-3.7` (queryChanges); CalendarEvent-specific properties
+Method shapes follow RFC 8620 section 3.3 (get), RFC 8620 section 3.4
+(changes), RFC 8620 section 3.5 (set), RFC 8620 section 3.6 (query),
+RFC 8620 section 3.7 (queryChanges); CalendarEvent-specific properties
 are defined in the JMAP Calendars specification.
 """
 
@@ -173,7 +173,7 @@ def build_event_query(
 
 def build_event_get_by_query_result(account_id: str, properties: list[str] | None = None) -> tuple:
     """Build a ``CalendarEvent/get`` call that back-references the ids from
-    the ``CalendarEvent/query`` call :func:`build_event_query` builds.
+    the ``CalendarEvent/query`` call ``build_event_query`` builds.
 
     Args:
         account_id: The JMAP accountId, must match the query call's.
@@ -181,7 +181,7 @@ def build_event_get_by_query_result(account_id: str, properties: list[str] | Non
 
     Returns:
         A 3-tuple ``("CalendarEvent/get", arguments_dict, call_id)``, meant
-        to be appended after :func:`build_event_query`'s own return value in
+        to be appended after ``build_event_query``'s own return value in
         the same ``methodCalls`` list.
     """
     return build_get_by_query_result(
@@ -289,6 +289,6 @@ def parse_event_set(
     """Parse the arguments dict from a ``CalendarEvent/set`` method response.
 
     Returns a 6-tuple ``(created, updated, destroyed, not_created, not_updated, not_destroyed)``.
-    See :func:`calendaring_jmap._methods.parse_set_response` for field semantics.
+    See ``parse_set_response`` for field semantics.
     """
     return parse_set_response(response_args)

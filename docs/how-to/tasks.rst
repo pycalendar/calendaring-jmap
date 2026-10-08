@@ -5,7 +5,7 @@
 Use tasks
 =========
 
-Task support requires a server implementing ``urn:ietf:params:jmap:tasks`` (the JMAP Tasks specification). If the server does not support this capability, :meth:`~calendaring_jmap.client.JMAPClient.get_task_lists` raises :class:`~calendaring_jmap.error.JMAPMethodError`.
+Task support requires a server implementing ``urn:ietf:params:jmap:tasks`` (the JMAP Tasks specification). If the server doesn't support this capability, :meth:`~calendaring_jmap.client.JMAPClient.get_task_lists` raises :class:`~calendaring_jmap.error.JMAPMethodError`.
 
 .. note::
 
@@ -65,3 +65,31 @@ Delete a task
 .. code-block:: python
 
     client.delete_task(task_id)
+
+Sync incrementally
+==================
+
+.. code-block:: python
+
+    token = client.get_task_sync_token()
+
+    # ... time passes, tasks are created, modified, or deleted ...
+
+    added, modified, deleted, token = client.get_tasks_by_sync_token(token)
+
+``added`` and ``modified`` are raw JMAP Task dicts. ``deleted`` is a list of task IDs. Chaining the sync token straight from the previous call's return value, rather than fetching a fresh one with :meth:`~calendaring_jmap.client.JMAPClient.get_task_sync_token`, avoids the race window a separate round trip would open. See :doc:`sync` for the same pattern applied to events, including how to persist a token between runs.
+
+:meth:`~calendaring_jmap.client.JMAPClient.get_tasks_by_sync_token` raises :class:`~calendaring_jmap.error.JMAPMethodError` if the server reports ``hasMoreChanges: true``; call :meth:`~calendaring_jmap.client.JMAPClient.get_task_sync_token` for a fresh baseline and re-sync from scratch.
+
+Search tasks
+============
+
+.. code-block:: python
+
+    results = client.search_tasks(text="pull request")
+    results = client.search_tasks(due_before="2026-03-01T00:00:00")
+    results = client.search_tasks(progress="needs-action")
+
+Omitting every argument returns every task in the account. All filters combine as AND.
+
+``due_before`` and ``due_after`` compare against each task's ``due`` as a plain string; a task with no ``due`` set never matches either filter. ``progress`` treats an absent value as ``"needs-action"``, the spec's own default for a task with no participants, which covers every task this client can create.

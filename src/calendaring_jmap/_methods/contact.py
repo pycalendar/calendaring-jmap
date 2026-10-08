@@ -5,8 +5,8 @@
 JMAP Contacts method builders and response parsers.
 
 Pure functions: no HTTP, no state. AddressBook and ContactCard object
-shapes are defined in :rfc:`9610` (JMAP Contacts); ContactCard properties
-follow JSContact (:rfc:`9553`).
+shapes are defined in RFC 9610 (JMAP Contacts); ContactCard properties
+follow JSContact (RFC 9553).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def build_address_book_get(
 ) -> tuple:
     """Build an ``AddressBook/get`` method call tuple.
 
-    A standard ``/get`` per :rfc:`8620#section-5.1` (:rfc:`9610#section-2.1`
+    A standard ``/get`` per RFC 8620 section 5.1 (RFC 9610 section 2.1
     defines no custom arguments for it).
 
     Args:
@@ -47,7 +47,7 @@ def parse_address_book_get(response_args: dict) -> list[JMAPAddressBook]:
             whose method name is ``"AddressBook/get"``.
 
     Returns:
-        List of :class:`~calendaring_jmap.objects.contact.JMAPAddressBook`.
+        List of ``JMAPAddressBook``.
         Empty if ``"list"`` is absent or empty.
     """
     return [JMAPAddressBook.from_jmap(item) for item in response_args.get("list", [])]
@@ -62,9 +62,9 @@ def build_contact_query(
 ) -> tuple:
     """Build a ``ContactCard/query`` method call tuple.
 
-    A standard ``/query`` per :rfc:`8620#section-5.5`. FilterCondition
-    properties are defined in :rfc:`9610#section-3.3.1`; see
-    :meth:`~calendaring_jmap.client.JMAPClient.search_contacts` for the
+    A standard ``/query`` per RFC 8620 section 5.5. FilterCondition
+    properties are defined in RFC 9610 section 3.3.1; see
+    ``JMAPClient.search_contacts`` for the
     live-verified ``email``/``text`` matching behavior on Cyrus and
     Stalwart, which differs between the two properties.
 
@@ -97,7 +97,7 @@ def build_contact_get_by_query_result(
     account_id: str, properties: list[str] | None = None
 ) -> tuple:
     """Build a ``ContactCard/get`` call that back-references the ids from
-    the ``ContactCard/query`` call :func:`build_contact_query` builds.
+    the ``ContactCard/query`` call ``build_contact_query`` builds.
 
     Args:
         account_id: The JMAP accountId, must match the query call's.
@@ -105,7 +105,7 @@ def build_contact_get_by_query_result(
 
     Returns:
         A 3-tuple ``("ContactCard/get", arguments_dict, call_id)``, meant
-        to be appended after :func:`build_contact_query`'s own return value
+        to be appended after ``build_contact_query``'s own return value
         in the same ``methodCalls`` list.
     """
     return build_get_by_query_result(
@@ -126,7 +126,7 @@ def parse_contact_get(response_args: dict) -> list[JMAPContact]:
             whose method name is ``"ContactCard/get"``.
 
     Returns:
-        List of :class:`~calendaring_jmap.objects.contact.JMAPContact`.
+        List of ``JMAPContact``.
         Empty if ``"list"`` is absent or empty.
     """
     return [JMAPContact.from_jmap(item) for item in response_args.get("list", [])]

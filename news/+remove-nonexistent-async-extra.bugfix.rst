@@ -1,0 +1,1 @@
+Removed the ``async`` extra. It declared ``niquests[asyncio]``, an extra niquests itself doesn't define; ``pip install calendaring-jmap[async]`` silently installed plain niquests with a pip warning, no different from the base install. Async support has never needed a separate install step: niquests is already a required dependency and ships ``AsyncSession`` unconditionally.

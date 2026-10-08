@@ -45,7 +45,7 @@ Or by its JMAP event ID, directly on the client, for example if you already have
 
     obj = client.get_event(event_id)
 
-Both return a :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`. Call :meth:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject.get_icalendar_instance` on it for an :class:`icalendar.Calendar`, or :meth:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject.get_data` for the raw JSCalendar dict.
+Both return a :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`. Call :meth:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject.get_icalendar_instance` on it for an :class:`icalendar.Calendar <icalendar.cal.calendar.Calendar>`, or :meth:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject.get_data` for the raw JSCalendar dict.
 
 Update an event
 ===============
@@ -102,10 +102,30 @@ Use :meth:`~calendaring_jmap.objects.calendar.JMAPCalendar.search` on a calendar
 
 All parameters are optional. Omitting all of them returns every event in the calendar. Results are a list of :class:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject`. The search uses a single batched JMAP request (``CalendarEvent/query`` plus a result reference into ``CalendarEvent/get``), so only one HTTP round trip is made regardless of how many events match.
 
+Search across every calendar
+============================
+
+:meth:`~calendaring_jmap.client.JMAPClient.search_events` searches the whole account rather than one calendar, and adds four filters ``cal.search()`` doesn't have:
+
+.. code-block:: python
+
+    results = client.search_events(
+        has_attachment=True,
+        participant_email="alice@example.com",
+        participation_status="accepted",
+        participant_role="chair",
+    )
+
+These four filter client-side, in Python, against whatever the server-side filters already matched, since none of them have a corresponding JMAP ``FilterCondition`` property. All filters combine as AND, but the three participant-based ones are each satisfied independently across an event's participants: an event where one participant matches ``participant_email`` and a different participant matches ``participant_role`` still matches both.
+
+Cyrus drops an attachment Link's ``rel: "enclosure"`` on read-back (seen against a running instance), so ``has_attachment=True`` misses real attachments there. Both Cyrus and Stalwart drop the ``attendee`` role from a participant's ``roles`` map, so ``participant_role="attendee"`` misses matches on both; a participant who is also ``chair`` keeps that role and still matches on it.
+
+Results from ``search_events`` have no ``parent`` calendar set, unlike results from ``cal.search()``, so :meth:`~calendaring_jmap.objects.calendar_object.JMAPCalendarObject.save` raises :class:`~calendaring_jmap.error.JMAPMethodError` on them; use ``cal.search()`` instead when you need to edit results in place with ``save()``.
+
 Use the async client
 ====================
 
-:class:`~calendaring_jmap.async_client.AsyncJMAPClient` mirrors every method of :class:`~calendaring_jmap.client.JMAPClient` as a coroutine. Use it as an ``async with`` context manager (sync ``with`` is not supported):
+:class:`~calendaring_jmap.async_client.AsyncJMAPClient` mirrors every method of :class:`~calendaring_jmap.client.JMAPClient` as a coroutine. Use it as an ``async with`` context manager (sync ``with`` isn't supported):
 
 .. code-block:: python
 
@@ -132,4 +152,4 @@ Use the async client
 
     asyncio.run(main())
 
-Event CRUD, search, sync, and task operations are all available as coroutines with identical signatures. The async client uses ``niquests.AsyncSession`` internally, so niquests is a required dependency for async use.
+Event CRUD, search, sync, and task operations are all available as coroutines with identical signatures. The async client uses ``niquests.AsyncSession`` internally; niquests is already a required dependency, so no extra install step is needed for async use.

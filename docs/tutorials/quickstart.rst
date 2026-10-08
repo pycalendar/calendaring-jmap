@@ -43,6 +43,8 @@ Next steps
 ==========
 
 - :doc:`../how-to/authenticate` for other ways to supply credentials.
+- :doc:`../how-to/calendars` to create, share, and manage calendars themselves, beyond listing them.
 - :doc:`../how-to/events` to create, read, update, and delete events.
 - :doc:`../how-to/errors` to handle what can go wrong.
+- The sidebar's **How-to guides** section covers everything else this client can do.
 - :doc:`../explanation/design` to understand how the client is put together, and why.

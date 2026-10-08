@@ -65,6 +65,46 @@ jobs:
       - name: Check code format
         run: ruff format --check .
 
+  vale:
+    name: Check docs prose with Vale
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Vale
+        run: |
+          curl -sL https://github.com/errata-ai/vale/releases/download/v3.24.0/vale_3.24.0_Linux_64-bit.tar.gz | tar -xz -C /usr/local/bin vale
+
+      - name: Sync Vale styles
+        run: vale sync
+
+      - name: Lint docs
+        run: vale --no-exit docs/
+
+  docs:
+    name: Build docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -e ".[docs]"
+
+      - name: Build docs
+        run: sphinx-build -W -b html docs docs/_build/html
+
   mypy:
     name: Type check with mypy
     runs-on: ubuntu-latest

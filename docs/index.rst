@@ -5,7 +5,10 @@
 calendaring-jmap
 ================
 
-Calendar operations over JMAP (:rfc:`8620` + draft-ietf-jmap-calendars).
+.. meta::
+   :description: A Python client library for calendar operations over JMAP (RFC 8620, JMAP core) and the JMAP Calendars draft, with synchronous and asynchronous clients.
+
+A Python client library for calendar operations over JMAP (:rfc:`8620`, JMAP core) and the JMAP Calendars draft, with synchronous and asynchronous clients.
 
 .. grid:: 2
     :gutter: 2
@@ -20,7 +23,7 @@ Calendar operations over JMAP (:rfc:`8620` + draft-ietf-jmap-calendars).
         :link: how-to/install
         :link-type: doc
 
-        Install, authenticate, and work with events, sync, and tasks.
+        Install, authenticate, and work with calendars, events, and more.
 
     .. grid-item-card:: 📖 Reference
         :link: reference/index
@@ -48,42 +51,11 @@ Calendar operations over JMAP (:rfc:`8620` + draft-ietf-jmap-calendars).
 
 .. toctree::
    :hidden:
-   :caption: Tutorials
 
    tutorials/quickstart
-
-.. toctree::
-   :hidden:
-   :caption: How-to guides
-
-   how-to/install
-   how-to/authenticate
-   how-to/calendars
-   how-to/events
-   how-to/sync
-   how-to/tasks
-   how-to/errors
-
-.. toctree::
-   :hidden:
-   :caption: Reference
-
-   reference/index
-   reference/client
-   reference/async_client
-   reference/objects
-   reference/errors
-   reference/changelog
-
-.. toctree::
-   :hidden:
-   :caption: Explanation
-
-   explanation/design
-
-.. toctree::
-   :hidden:
-   :caption: Project
-
+   how-to/index
+   Reference <reference/index>
+   explanation/index
    contribute
    security
+   release
